@@ -43,15 +43,6 @@ static int _getch(void) {
 }
 #endif
 
-static void render_menu_item(int num, const char *text, bool is_exit) {
-    printf("  ");
-    if (is_exit) {
-        printf(C_DIM "%d." C_RESET " %s\n", num, text);
-    } else {
-        printf(C_BOLD C_YELLOW "%d." C_RESET " %s\n", num, text);
-    }
-}
-
 int get_menu_choice(int min, int max) {
     // Get cached menu items
     int   item_nums[MAX_MENU_ITEMS];
@@ -59,9 +50,26 @@ int get_menu_choice(int min, int max) {
     bool  item_exit[MAX_MENU_ITEMS];
     int   item_count = ui_menu_cache_fill(item_nums, item_texts, item_exit, MAX_MENU_ITEMS);
 
-    int current = (min >= 1) ? min : (min + 1);
-    if (current < min) current = min;
-    if (current > max) current = max;
+    int current_index = 0;
+    int current;
+    
+    if (item_count > 0) {
+        current = item_nums[0];
+        // If min was specified as > 0 and exists in array, try to select it
+        if (min >= 1) {
+            for (int i = 0; i < item_count; i++) {
+                if (item_nums[i] == min) {
+                    current_index = i;
+                    current = item_nums[i];
+                    break;
+                }
+            }
+        }
+    } else {
+        current = (min >= 1) ? min : (min + 1);
+        if (current < min) current = min;
+        if (current > max) current = max;
+    }
 
     printf("\n请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
     printf("\033[7m %d \033[0m", current);
@@ -76,27 +84,50 @@ int get_menu_choice(int min, int max) {
             // Windows arrow key prefix
             ch = _getch();
             if (ch == 72) {
-                current--;
-                if (current < min) current = max;
+                if (item_count > 0) {
+                    current_index--;
+                    if (current_index < 0) current_index = item_count - 1;
+                    current = item_nums[current_index];
+                } else {
+                    current--;
+                    if (current < min) current = max;
+                }
             } else if (ch == 80) {
-                current++;
-                if (current > max) current = min;
+                if (item_count > 0) {
+                    current_index++;
+                    if (current_index >= item_count) current_index = 0;
+                    current = item_nums[current_index];
+                } else {
+                    current++;
+                    if (current > max) current = min;
+                }
             } else {
                 continue;
             }
         }
-#ifndef _WIN32
         else if (ch == 0x1B) {
-            // Unix ESC [ A/B sequence
+            // Unix/ANSI ESC [ A/B sequence
             ch = _getch();
             if (ch == '[') {
                 ch = _getch();
                 if (ch == 'A') {
-                    current--;
-                    if (current < min) current = max;
+                    if (item_count > 0) {
+                        current_index--;
+                        if (current_index < 0) current_index = item_count - 1;
+                        current = item_nums[current_index];
+                    } else {
+                        current--;
+                        if (current < min) current = max;
+                    }
                 } else if (ch == 'B') {
-                    current++;
-                    if (current > max) current = min;
+                    if (item_count > 0) {
+                        current_index++;
+                        if (current_index >= item_count) current_index = 0;
+                        current = item_nums[current_index];
+                    } else {
+                        current++;
+                        if (current > max) current = min;
+                    }
                 } else {
                     continue;
                 }
@@ -104,25 +135,12 @@ int get_menu_choice(int min, int max) {
                 continue;
             }
         }
-#endif
         else if (ch == '\r' || ch == '\n') {
             printf("\n");
             return current;
         } else if (ch >= '0' && ch <= '9') {
             int num = ch - '0';
             if (num >= min && num <= max) {
-                // Direct digit selection: redraw final state before returning
-                if (item_count > 0 && num != prev) {
-                    printf("\0337\033[%dA", item_count + 2);
-                    for (int i = 0; i < item_count; i++) {
-                        printf("\r\033[K");
-                        if (item_nums[i] == num)
-                            printf(BG_CYAN "  " C_BOLD C_YELLOW "%d." C_RESET BG_CYAN " %s" C_RESET "\n", item_nums[i], item_texts[i]);
-                        else
-                            render_menu_item(item_nums[i], item_texts[i], item_exit[i]);
-                    }
-                    printf("\0338");
-                }
                 printf("\n");
                 return num;
             }
@@ -133,21 +151,8 @@ int get_menu_choice(int min, int max) {
 
         if (current == prev) continue;
 
-        // Redraw menu items with highlight using cursor save/restore
-        if (item_count > 0) {
-            printf("\0337");                              // save cursor (at prompt)
-            printf("\033[%dA", item_count + 2);           // move up to first item
-            for (int i = 0; i < item_count; i++) {
-                printf("\r\033[K");                       // clear line
-                if (item_nums[i] == current)
-                    printf(BG_CYAN "  " C_BOLD C_YELLOW "%d." C_RESET BG_CYAN " %s" C_RESET "\n", item_nums[i], item_texts[i]);
-                else
-                    render_menu_item(item_nums[i], item_texts[i], item_exit[i]);
-            }
-            printf("\0338");                              // restore to prompt
-        }
-
-        // Update prompt
+        // Update prompt selection number only (skip menu item redraw,
+        // since non-menu lines between items make cursor positioning unreliable)
         printf("\r\033[K请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
         printf("\033[7m %d \033[0m", current);
         fflush(stdout);

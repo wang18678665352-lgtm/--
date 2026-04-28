@@ -21,25 +21,6 @@ static void print_patient_name_by_id(const char *patient_id, char *patient_name,
     free_patient_list(patient_head);
 }
 
-static void print_drug_name_by_id(const char *drug_id, char *drug_name, size_t size) {
-    DrugNode *drug_head = load_drugs_list();
-    DrugNode *current_drug = drug_head;
-
-    strncpy(drug_name, "未知", size - 1);
-    drug_name[size - 1] = '\0';
-
-    while (current_drug) {
-        if (strcmp(current_drug->data.drug_id, drug_id) == 0) {
-            strncpy(drug_name, current_drug->data.name, size - 1);
-            drug_name[size - 1] = '\0';
-            break;
-        }
-        current_drug = current_drug->next;
-    }
-
-    free_drug_list(drug_head);
-}
-
 static int doctor_has_patient_relation(const Doctor *doctor, const char *patient_id) {
     AppointmentNode *appointment_head = load_appointments_list();
     AppointmentNode *current_appointment = appointment_head;
@@ -318,7 +299,7 @@ int doctor_appointment_reminder_menu(const User *current_user) {
     Doctor *current_doctor = find_doctor_by_username(current_user->username);
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 
@@ -351,7 +332,7 @@ int doctor_consultation_menu(const User *current_user) {
     int result;
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 
@@ -490,7 +471,7 @@ int doctor_prescribe_menu(const User *current_user) {
     int quantity;
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 
@@ -767,7 +748,7 @@ int doctor_ward_call_menu(const User *current_user) {
     int found = 0;
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 
@@ -932,7 +913,7 @@ int doctor_emergency_flag_menu(const User *current_user) {
     Patient *patient = NULL;
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 
@@ -1025,7 +1006,7 @@ int doctor_update_progress_menu(const User *current_user) {
     int choice;
 
     if (!current_doctor) {
-        printf("\n医生信息不存在!\n");
+        ui_err("医生信息不存在!");
         return ERROR_NOT_FOUND;
     }
 

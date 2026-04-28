@@ -53,6 +53,9 @@ void ui_menu_exit(int num, const char *text);
 void ui_user_badge(const char *name, const char *role);
 void ui_step(int step, const char *desc);
 
+// =======================  确认对话框 =======================
+bool ui_confirm(const char *prompt);
+
 // =======================  表格列打印（显示宽度对齐） =======================
 int  utf8_display_width(const char *s);
 void ui_print_col(const char *s, int width);

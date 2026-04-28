@@ -95,7 +95,6 @@ static void list_patients(void) {
 
     free_patient_list(head);
 }
-
 static void list_drugs(void) {
     DrugNode *head = load_drugs_list();
     DrugNode *current = head;
@@ -219,6 +218,11 @@ int admin_department_menu(const User *current_user) {
                 return ERROR_INVALID_INPUT;
             }
             name[strcspn(name, "\n")] = 0;
+            if (name[0] == '\0') {
+                ui_err("科室名称不能为空!");
+                free_department_list(head);
+                return ERROR_INVALID_INPUT;
+            }
 
             printf("请输入负责人: ");
             if (fgets(leader, sizeof(leader), stdin) == NULL) {
@@ -226,6 +230,11 @@ int admin_department_menu(const User *current_user) {
                 return ERROR_INVALID_INPUT;
             }
             leader[strcspn(leader, "\n")] = 0;
+            if (leader[0] == '\0') {
+                ui_err("负责人不能为空!");
+                free_department_list(head);
+                return ERROR_INVALID_INPUT;
+            }
 
             printf("请输入联系电话: ");
             if (fgets(phone, sizeof(phone), stdin) == NULL) {
@@ -333,6 +342,11 @@ int admin_department_menu(const User *current_user) {
                     free_department_list(head);
                     return ERROR_PERMISSION_DENIED;
                 }
+            }
+
+            if (!ui_confirm("确认删除该科室?")) {
+                free_department_list(head);
+                return SUCCESS;
             }
 
             if (!prev) {
@@ -502,6 +516,11 @@ int admin_doctor_menu(const User *current_user) {
                 }
             }
 
+            if (!ui_confirm("确认删除该医生?")) {
+                free_doctor_list(head);
+                return SUCCESS;
+            }
+
             if (!prev) {
                 head = current->next;
             } else {
@@ -585,7 +604,14 @@ int admin_patient_menu(const User *current_user) {
             printf("当前患者类型(%s), 输入新类型(普通/医保/军人, 直接回车不改): ", current->data.patient_type);
             if (fgets(input, sizeof(input), stdin)) {
                 input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') strcpy(current->data.patient_type, input);
+                if (input[0] != '\0') {
+                    if (strcmp(input, "普通") != 0 && strcmp(input, "医保") != 0 && strcmp(input, "军人") != 0) {
+                        ui_err("无效的患者类型! 有效值: 普通/医保/军人");
+                        free_patient_list(head);
+                        return ERROR_INVALID_INPUT;
+                    }
+                    strcpy(current->data.patient_type, input);
+                }
             }
 
             save_patients_list(head);
@@ -648,6 +674,11 @@ int admin_patient_menu(const User *current_user) {
                 }
             }
 
+            if (!ui_confirm("确认删除该患者?")) {
+                free_patient_list(head);
+                return SUCCESS;
+            }
+
             if (!prev) {
                 head = current->next;
             } else {
@@ -695,6 +726,10 @@ int admin_drug_menu(const User *current_user) {
             printf("\n请输入药品编号: ");
             if (fgets(drug_id, sizeof(drug_id), stdin) == NULL) return ERROR_INVALID_INPUT;
             drug_id[strcspn(drug_id, "\n")] = 0;
+            if (drug_id[0] == '\0') {
+                ui_err("药品编号不能为空!");
+                return ERROR_INVALID_INPUT;
+            }
 
             head = load_drugs_list();
             current = head;
@@ -715,6 +750,11 @@ int admin_drug_menu(const User *current_user) {
                 return ERROR_INVALID_INPUT;
             }
             drug.name[strcspn(drug.name, "\n")] = 0;
+            if (drug.name[0] == '\0') {
+                ui_err("药品名称不能为空!");
+                free_drug_list(head);
+                return ERROR_INVALID_INPUT;
+            }
 
             printf("请输入单价: ");
             if (scanf("%f", &drug.price) != 1 || drug.price < 0) {
@@ -884,6 +924,11 @@ int admin_drug_menu(const User *current_user) {
                 return ERROR_NOT_FOUND;
             }
 
+            if (!ui_confirm("确认删除该药品?")) {
+                free_drug_list(head);
+                return SUCCESS;
+            }
+
             if (!prev) {
                 head = current->next;
             } else {
@@ -938,12 +983,16 @@ int admin_ward_menu(const User *current_user) {
             printf("\n请输入病房编号: ");
             if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) return ERROR_INVALID_INPUT;
             ward_id[strcspn(ward_id, "\n")] = 0;
+            if (ward_id[0] == '\0') {
+                ui_err("病房编号不能为空!");
+                return ERROR_INVALID_INPUT;
+            }
 
             ward_head = load_wards_list();
             current_ward = ward_head;
             while (current_ward) {
                 if (strcmp(current_ward->data.ward_id, ward_id) == 0) {
-                    printf("病房编号已存在!\n");
+                    ui_err("病房编号已存在!");
                     free_ward_list(ward_head);
                     return ERROR_DUPLICATE;
                 }
@@ -958,6 +1007,11 @@ int admin_ward_menu(const User *current_user) {
                 return ERROR_INVALID_INPUT;
             }
             ward.type[strcspn(ward.type, "\n")] = 0;
+            if (ward.type[0] == '\0') {
+                ui_err("病房类型不能为空!");
+                free_ward_list(ward_head);
+                return ERROR_INVALID_INPUT;
+            }
 
             printf("请输入总床位数: ");
             if (scanf("%d", &ward.total_beds) != 1 || ward.total_beds <= 0) {
@@ -1013,7 +1067,7 @@ int admin_ward_menu(const User *current_user) {
                 current_ward = current_ward->next;
             }
             if (!current_ward) {
-                printf("病房不存在!\n");
+                ui_err("病房不存在!");
                 free_ward_list(ward_head);
                 return ERROR_NOT_FOUND;
             }
@@ -1063,9 +1117,14 @@ int admin_ward_menu(const User *current_user) {
                 current_ward = current_ward->next;
             }
             if (!current_ward) {
-                printf("病房不存在!\n");
+                ui_err("病房不存在!");
                 free_ward_list(ward_head);
                 return ERROR_NOT_FOUND;
+            }
+
+            if (!ui_confirm("确认删除该病房?")) {
+                free_ward_list(ward_head);
+                return SUCCESS;
             }
 
             if (!prev) {

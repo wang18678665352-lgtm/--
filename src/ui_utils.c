@@ -483,6 +483,14 @@ void ui_menu_exit(int num, const char *text) {
     printf(C_RESET "\n");
 }
 
+bool ui_confirm(const char *prompt) {
+    printf("\n" S_WARNING "  ? %s" C_RESET " [" C_BOLD C_GREEN "Y" C_RESET "/" C_DIM "n" C_RESET "]: ", prompt ? prompt : "确认执行");
+    fflush(stdout);
+    int c = getchar();
+    clear_input_buffer();
+    return (c == '\n' || c == '\r' || c == 'y' || c == 'Y');
+}
+
 void ui_user_badge(const char *name, const char *role) {
     const char *role_label = "";
     if (strcmp(role, "admin") == 0) role_label = "\xe7\xae\xa1 \xe7\x90\x86 \xe5\x91\x98";

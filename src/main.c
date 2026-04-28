@@ -9,7 +9,7 @@
 #include "ui_utils.h"
 
 // Global session
-Session global_session = { {0}, false };
+Session global_session = {0};
 
 void show_main_menu(void);
 void run_patient_menu(const User *user);
@@ -150,6 +150,7 @@ int main(void) {
 }
 
 void show_main_menu(void) {
+    ui_clear_screen();
     printf("\n");
     ui_box_top("主 菜 单");
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
@@ -162,6 +163,7 @@ void show_main_menu(void) {
 
 void run_patient_menu(const User *user) {
     while (1) {
+        ui_clear_screen();
         printf("\n");
         ui_box_top("患 者 系 统");
         ui_user_badge(user->username, user->role);
@@ -190,6 +192,7 @@ void run_patient_menu(const User *user) {
 
 void run_doctor_menu(const User *user) {
     while (1) {
+        ui_clear_screen();
         printf("\n");
         ui_box_top("医 生 系 统");
         ui_user_badge(user->username, user->role);
@@ -219,6 +222,7 @@ void run_doctor_menu(const User *user) {
 
 void run_admin_menu(const User *user) {
     while (1) {
+        ui_clear_screen();
         printf("\n");
         ui_box_top("管 理 员 系 统");
         ui_user_badge(user->username, user->role);
