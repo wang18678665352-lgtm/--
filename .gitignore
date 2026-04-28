@@ -1,0 +1,8 @@
+# C 编译产物
+*.o
+*.exe
+*\.vs
+*.json
+# 构建目录
+*.txt
+build/
