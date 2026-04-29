@@ -1377,7 +1377,7 @@ void migrate_doctor_ids(void) {
     DoctorNode *dh = load_doctors_list();
     DoctorNode *doc = dh;
     int changed = 0;
-    char old_to_new[200][2][MAX_ID];
+    char old_to_new[500][2][MAX_ID];
     int map_count = 0;
 
     if (!dh) return;

@@ -5,6 +5,13 @@
 #include <windows.h>
 #endif
 
+// =======================  行跟踪（原位高亮用） =======================
+static int   g_line_counter      = 0;        // 当前菜单段落累计行数
+static int   g_item_offsets[MAX_MENU_ITEMS]; // 每个菜单项的行号（从段落起点计）
+static int   g_saved_total       = 0;        // ui_menu_cache_fill 时固化的总行数
+static int   g_saved_offsets[MAX_MENU_ITEMS];// ui_menu_cache_fill 时固化的偏移
+static int   g_saved_count       = 0;
+
 int utf8_display_width(const char *s) {
     int w = 0;
     if (!s) return 0;
@@ -64,6 +71,7 @@ void ui_box_top(const char *title) {
     for (int i = 0; i < right; i++) printf("\xe2\x95\x90");
     printf("\xe2\x95\x97");
     printf(C_RESET "\n");
+    g_line_counter++;
 }
 
 void ui_print_col(const char *s, int width) {
@@ -105,10 +113,8 @@ static int str_contains_icase(const char *haystack, const char *needle) {
 }
 
 int smart_id_lookup(const char *prompt, const char *id_list[], int count, char *output, int out_size) {
-    char input[64];
-    int i;
-
     if (count <= 0) {
+        char input[64];
         printf(S_LABEL "  %s: " C_RESET, prompt);
         if (fgets(input, sizeof(input), stdin) == NULL) return -1;
         input[strcspn(input, "\n")] = 0;
@@ -118,82 +124,15 @@ int smart_id_lookup(const char *prompt, const char *id_list[], int count, char *
         return 1;
     }
 
-    printf("\n" S_LABEL "  %s" C_RESET " (" C_DIM "输缩写/序号, 空回车查看列表" C_RESET "): ", prompt);
-    if (fgets(input, sizeof(input), stdin) == NULL) return -1;
-    input[strcspn(input, "\n")] = 0;
-
-    if (input[0] == 0) {
-        int per_page = (count < 15) ? count : 15;
-        printf("\n" S_LABEL "  可选项 (%d个):" C_RESET "\n", count);
-        ui_divider();
-        for (i = 0; i < per_page; i++) {
-            printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", i + 1, id_list[i]);
-        }
-        if (count > per_page)
-            printf("  " C_DIM "...还有 %d 项，请输入更多字符筛选" C_RESET "\n", count - per_page);
-
-        printf(S_LABEL "  %s (输序号/缩写): " C_RESET, prompt);
-        if (fgets(input, sizeof(input), stdin) == NULL) return -1;
-        input[strcspn(input, "\n")] = 0;
-        if (input[0] == 0) return -1;
-    }
-
-    {
-        int is_digits = 1;
-        for (i = 0; input[i]; i++) if (input[i] < '0' || input[i] > '9') { is_digits = 0; break; }
-        if (is_digits && input[0]) {
-            int idx = atoi(input) - 1;
-            if (idx >= 0 && idx < count) {
-                strncpy(output, id_list[idx], out_size - 1);
-                output[out_size - 1] = 0;
-                return 1;
-            }
-        }
-    }
-
-    {
-        int matches[200];
-        int mcount = 0;
-        for (i = 0; i < count && mcount < 200; i++) {
-            if (str_contains_icase(id_list[i], input)) {
-                matches[mcount++] = i;
-            }
-        }
-        if (mcount == 1) {
-            strncpy(output, id_list[matches[0]], out_size - 1);
-            output[out_size - 1] = 0;
-            return 1;
-        }
-        if (mcount > 1 && mcount <= 20) {
-            printf("\n" S_LABEL "  匹配到 %d 项:" C_RESET "\n", mcount);
-            ui_divider();
-            for (i = 0; i < mcount; i++)
-                printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", i + 1, id_list[matches[i]]);
-            printf(S_LABEL "  请选择序号: " C_RESET);
-            if (fgets(input, sizeof(input), stdin) == NULL) return -1;
-            input[strcspn(input, "\n")] = 0;
-            if (input[0]) {
-                int idx = atoi(input) - 1;
-                if (idx >= 0 && idx < mcount) {
-                    strncpy(output, id_list[matches[idx]], out_size - 1);
-                    output[out_size - 1] = 0;
-                    return 1;
-                }
-            }
-            return -1;
-        }
-        if (mcount > 20) {
-            printf(S_WARNING "  匹配项过多(%d个)，请输入更精确的缩写。" C_RESET "\n", mcount);
-            return -1;
-        }
-    }
-
-    printf(S_WARNING "  未匹配到任何编号。" C_RESET "\n");
-    return -1;
+    int idx = ui_search_list(prompt, id_list, count);
+    if (idx < 0) return -1;
+    strncpy(output, id_list[idx], out_size - 1);
+    output[out_size - 1] = 0;
+    return 1;
 }
 
 int smart_patient_input(const char *doctor_id, const char *prompt, char *output, int out_size) {
-    const char *candidates[300];
+    const char *candidates[500];
     int count = 0;
 
     {
@@ -233,8 +172,8 @@ int smart_patient_input(const char *doctor_id, const char *prompt, char *output,
 int smart_drug_input(const char *prompt, char *output, int out_size) {
     DrugNode *dh = load_drugs_list();
     DrugNode *dc = dh;
-    char *drug_list[200];
-    char  drug_buf[200][MAX_ID + MAX_NAME + 4];
+    char *drug_list[300];
+    char  drug_buf[300][MAX_ID + MAX_NAME + 4];
     int count = 0;
 
     while (dc && count < 200) {
@@ -258,8 +197,8 @@ int quick_template_input(const char *category, const char *prompt, char *output,
     TemplateNode *head = load_templates_list();
     TemplateNode *cur = head;
 
-    const char *tlist[100];
-    char ttext[100][600];
+    const char *tlist[200];
+    char ttext[200][600];
     int tcount = 0;
 
     while (cur && tcount < 100) {
@@ -369,6 +308,7 @@ void ui_box_bottom(void) {
     for (int i = 0; i < 58; i++) printf("\xe2\x95\x90");
     printf("\xe2\x95\x9d");
     printf(C_RESET "\n");
+    g_line_counter++;
 }
 
 void ui_header(const char *title) {
@@ -380,6 +320,7 @@ void ui_header(const char *title) {
     printf(C_BOLD C_CYAN);
     printf("  \xe2\x94\x81\xe2\x94\x81\xe2\x94\x81");
     printf(C_RESET "\n");
+    g_line_counter += 2;  // blank line + title line
 }
 
 void ui_sub_header(const char *title) {
@@ -390,6 +331,7 @@ void ui_sub_header(const char *title) {
     printf(C_BOLD);
     printf("%s", title);
     printf(C_RESET "\n");
+    g_line_counter += 2;  // blank line + title line
 }
 
 void ui_divider(void) {
@@ -397,6 +339,7 @@ void ui_divider(void) {
     printf("  ");
     for (int i = 0; i < 58; i++) printf("\xe2\x94\x80");
     printf(C_RESET "\n");
+    g_line_counter++;
 }
 
 void ui_ok(const char *msg) {
@@ -439,6 +382,7 @@ static int   g_menu_count = 0;
 
 void ui_menu_cache_init(void) {
     g_menu_count = 0;
+    g_line_counter = 0;
 }
 
 int ui_menu_cache_fill(int *nums, char texts[][60], bool *is_exit, int max) {
@@ -449,12 +393,21 @@ int ui_menu_cache_fill(int *nums, char texts[][60], bool *is_exit, int max) {
         texts[i][59] = 0;
         is_exit[i] = g_menu_exit[i];
     }
+
+    // Save line-tracking snapshot before reset
+    g_saved_total = g_line_counter;
+    for (int i = 0; i < n && i < MAX_MENU_ITEMS; i++) {
+        g_saved_offsets[i] = g_item_offsets[i];
+    }
+    g_saved_count = n;
+
     ui_menu_cache_init();  // reset for next menu
     return n;
 }
 
 void ui_menu_item(int num, const char *text) {
     if (g_menu_count < MAX_MENU_ITEMS) {
+        g_item_offsets[g_menu_count] = g_line_counter;
         g_menu_nums[g_menu_count] = num;
         strncpy(g_menu_texts[g_menu_count], text, 59);
         g_menu_texts[g_menu_count][59] = 0;
@@ -466,10 +419,12 @@ void ui_menu_item(int num, const char *text) {
     printf("%d.", num);
     printf(C_RESET);
     printf(" %s\n", text);
+    g_line_counter++;
 }
 
 void ui_menu_exit(int num, const char *text) {
     if (g_menu_count < MAX_MENU_ITEMS) {
+        g_item_offsets[g_menu_count] = g_line_counter;
         g_menu_nums[g_menu_count] = num;
         strncpy(g_menu_texts[g_menu_count], text, 59);
         g_menu_texts[g_menu_count][59] = 0;
@@ -481,13 +436,14 @@ void ui_menu_exit(int num, const char *text) {
     printf("%d.", num);
     printf(" %s", text);
     printf(C_RESET "\n");
+    g_line_counter++;
 }
 
 bool ui_confirm(const char *prompt) {
     printf("\n" S_WARNING "  ? %s" C_RESET " [" C_BOLD C_GREEN "Y" C_RESET "/" C_DIM "n" C_RESET "]: ", prompt ? prompt : "确认执行");
     fflush(stdout);
     int c = getchar();
-    clear_input_buffer();
+    if (c != '\n' && c != '\r') clear_input_buffer();
     return (c == '\n' || c == '\r' || c == 'y' || c == 'Y');
 }
 
@@ -506,4 +462,174 @@ void ui_user_badge(const char *name, const char *role) {
     printf(BG_CYAN C_BOLD);
     printf(" %s ", role_label);
     printf(C_RESET "\n");
+    g_line_counter++;
+}
+
+// =======================  菜单行跟踪接口 =======================
+void ui_menu_track_line(void) {
+    g_line_counter++;
+}
+
+int ui_menu_get_saved_total(void) {
+    return g_saved_total;
+}
+
+int ui_menu_get_item_offset(int idx) {
+    if (idx >= 0 && idx < g_saved_count) return g_saved_offsets[idx];
+    return 0;
+}
+
+// =======================  分页与搜索 =======================
+void ui_paginate(const char **items, int count, int page_size, const char *title) {
+    if (count <= 0) {
+        ui_warn("暂无数据。");
+        return;
+    }
+
+    if (page_size <= 0) page_size = 15;
+
+    int total_pages = (count + page_size - 1) / page_size;
+    int page = 0;
+
+    while (page < total_pages) {
+        if (title) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s (共%d条)", title, count);
+            ui_sub_header(buf);
+        }
+
+        int start = page * page_size;
+        int end = start + page_size;
+        if (end > count) end = count;
+
+        for (int i = start; i < end; i++) {
+            printf("  " C_BOLD C_YELLOW "%d." C_RESET " %s\n", i + 1, items[i]);
+        }
+
+        if (total_pages > 1) {
+            printf(C_DIM "  ─── 第 %d/%d 页", page + 1, total_pages);
+            if (page < total_pages - 1) {
+                printf("，回车继续");
+            }
+            printf("，q 返回，s 搜索" C_RESET "\n");
+
+            int c = getchar();
+            if (c != '\n') clear_input_buffer();
+
+            if (c == 'q' || c == 'Q') break;
+
+            if (c == 's' || c == 'S') {
+                char keyword[64];
+                printf(S_LABEL "  输入关键字: " C_RESET);
+                if (fgets(keyword, sizeof(keyword), stdin) == NULL) continue;
+                keyword[strcspn(keyword, "\n")] = 0;
+                if (keyword[0] == '\0') continue;
+
+                int match_idx[count];
+                int match_cnt = 0;
+                for (int i = 0; i < count; i++) {
+                    if (str_contains_icase(items[i], keyword)) {
+                        match_idx[match_cnt++] = i;
+                    }
+                }
+
+                if (match_cnt == 0) {
+                    ui_warn("未匹配到结果。");
+                    continue;
+                }
+
+                const char *filtered[match_cnt];
+                for (int i = 0; i < match_cnt; i++) {
+                    filtered[i] = items[match_idx[i]];
+                }
+
+                char search_title[128];
+                if (title) {
+                    snprintf(search_title, sizeof(search_title), "%s 搜索结果", title);
+                } else {
+                    snprintf(search_title, sizeof(search_title), "搜索结果");
+                }
+                ui_paginate(filtered, match_cnt, page_size, search_title);
+                continue;
+            }
+
+            if (c != '\n' && page >= total_pages - 1) break;
+        }
+
+        page++;
+    }
+}
+
+int ui_search_list(const char *prompt, const char **items, int count) {
+    if (count <= 0) {
+        ui_warn("暂无数据。");
+        return -1;
+    }
+
+    char input[64];
+    int last_matches[500];
+    int last_mcount = 0;
+
+    while (1) {
+        printf(S_LABEL "  %s" C_RESET " (" C_DIM "输入关键字搜索, 序号直接选, q取消" C_RESET "): ",
+               prompt ? prompt : "搜索");
+        if (fgets(input, sizeof(input), stdin) == NULL) return -1;
+        input[strcspn(input, "\n")] = 0;
+
+        if (strcmp(input, "q") == 0 || strcmp(input, "Q") == 0) return -1;
+        if (input[0] == '\0') continue;
+
+        // Try direct number selection
+        {
+            int is_digits = 1;
+            for (char *p = input; *p; p++) {
+                if (*p < '0' || *p > '9') { is_digits = 0; break; }
+            }
+            if (is_digits) {
+                int max_idx = (last_mcount > 0) ? last_mcount : count;
+                int idx = atoi(input) - 1;
+                if (idx >= 0 && idx < max_idx) {
+                    if (last_mcount > 0) return last_matches[idx];
+                    return idx;
+                }
+                printf(S_ERROR "  序号超出范围 (1-%d)!" C_RESET "\n", max_idx);
+                continue;
+            }
+        }
+
+        // Substring search
+        int matches[500];
+        int mcount = 0;
+        for (int i = 0; i < count && mcount < 500; i++) {
+            if (str_contains_icase(items[i], input)) {
+                matches[mcount++] = i;
+            }
+        }
+
+        if (mcount == 0) {
+            ui_err("未匹配到任何结果。");
+            continue;
+        }
+
+        if (mcount == 1) {
+            printf(S_SUCCESS "  %s" C_RESET "\n", items[matches[0]]);
+            return matches[0];
+        }
+
+        // Store matches for subsequent number selection
+        memcpy(last_matches, matches, mcount * sizeof(int));
+        last_mcount = mcount;
+
+        // Show results (first 20)
+        printf("\n" S_LABEL "  %s 匹配到 %d 项:" C_RESET "\n", prompt ? prompt : "搜索结果", mcount);
+        ui_divider();
+        int show_count = mcount > 20 ? 20 : mcount;
+        for (int i = 0; i < show_count; i++) {
+            printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", i + 1, items[matches[i]]);
+        }
+        if (mcount > 20) {
+            printf(C_DIM "  ... 还有 %d 项, 输入更精确的关键字缩小范围" C_RESET "\n", mcount - 20);
+        }
+        // Loop back: user can enter number to select, or keyword to refine
+    }
 }

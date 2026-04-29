@@ -35,6 +35,11 @@
 void ui_menu_cache_init(void);
 int  ui_menu_cache_fill(int *nums, char texts[][60], bool *is_exit, int max);
 
+// =======================  行跟踪（实现选项原位高亮） =======================
+void ui_menu_track_line(void);
+int  ui_menu_get_saved_total(void);
+int  ui_menu_get_item_offset(int idx);
+
 // =======================  UI 辅助函数 =======================
 void ui_init_ansi(void);
 void ui_clear_screen(void);
@@ -69,5 +74,24 @@ int  smart_drug_input(const char *prompt, char *output, int out_size);
 
 // =======================  模板快捷输入 =======================
 int  quick_template_input(const char *category, const char *prompt, char *output, int out_size);
+
+// =======================  分页与搜索 =======================
+/**
+ * 分页显示列表
+ * @param items     字符串数组
+ * @param count     总条数
+ * @param page_size 每页行数 (<=0 则默认 15)
+ * @param title     列表标题（传 NULL 则不显示）
+ */
+void ui_paginate(const char **items, int count, int page_size, const char *title);
+
+/**
+ * 搜索并选择列表项
+ * @param prompt    提示文字
+ * @param items     字符串数组
+ * @param count     总条数
+ * @return 选中的索引 (0-based)，-1 表示取消
+ */
+int  ui_search_list(const char *prompt, const char **items, int count);
 
 #endif

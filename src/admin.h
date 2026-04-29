@@ -21,7 +21,7 @@ int admin_drug_menu(const User *current_user);
 // Ward management
 int admin_ward_menu(const User *current_user);
 
-// Report management
-int admin_report_menu(const User *current_user);
+// Analysis / Report management
+int admin_analysis_menu(const User *current_user);
 
 #endif // ADMIN_H

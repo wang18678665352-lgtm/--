@@ -13,6 +13,13 @@ bool is_unique_id(const char *id, const char *id_type);
 // Warning functions
 void check_drug_warning(void);
 void check_ward_warning(void);
+int  get_drug_warning_count(void);
+int  get_ward_warning_count(void);
+void show_warning_banner(void);
+
+// Input validation helpers
+bool is_valid_phone(const char *s);
+bool is_valid_age(int age);
 
 // Reimbursement calculation
 float calculate_reimbursement(float total_amount, const char *patient_type);

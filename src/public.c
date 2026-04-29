@@ -1,4 +1,5 @@
 #include "public.h"
+#include "ui_utils.h"
 #include <ctype.h>
 
 static int parse_date_value(const char *date_text, struct tm *date_value) {
@@ -132,7 +133,59 @@ bool is_unique_id(const char *id, const char *id_type) {
     return true;
 }
 
+// Input validation helpers
+bool is_valid_phone(const char *s) {
+    size_t len;
+    if (!s || s[0] == '\0') return false;
+    len = strlen(s);
+    if (len < 7 || len > 15) return false;
+    for (size_t i = 0; i < len; i++) {
+        if (!isdigit((unsigned char)s[i])) return false;
+    }
+    return true;
+}
+
+bool is_valid_age(int age) {
+    return age >= 0 && age <= 150;
+}
+
 // Warning functions
+int get_drug_warning_count(void) {
+    DrugNode *head = load_drugs_list();
+    DrugNode *cur = head;
+    int n = 0;
+    while (cur) {
+        if (cur->data.stock_num <= cur->data.warning_line) n++;
+        cur = cur->next;
+    }
+    free_drug_list(head);
+    return n;
+}
+
+int get_ward_warning_count(void) {
+    WardNode *head = load_wards_list();
+    WardNode *cur = head;
+    int n = 0;
+    while (cur) {
+        if (cur->data.remain_beds <= cur->data.warning_line) n++;
+        cur = cur->next;
+    }
+    free_ward_list(head);
+    return n;
+}
+
+void show_warning_banner(void) {
+    int dc = get_drug_warning_count();
+    int wc = get_ward_warning_count();
+    if (dc == 0 && wc == 0) return;
+
+    printf("  " C_BOLD C_YELLOW "\xe2\x9a\xa0 " C_RESET);
+    if (dc > 0) printf(C_YELLOW "%d \xe7\xa7\x8d\xe8\x8d\xaf\xe5\x93\x81\xe5\xba\x93\xe5\xad\x98\xe4\xb8\x8d\xe8\xb6\xb3" C_RESET, dc);
+    if (dc > 0 && wc > 0) printf(C_YELLOW ", " C_RESET);
+    if (wc > 0) printf(C_YELLOW "%d \xe9\x97\xb4\xe7\x97\x85\xe6\x88\xbf\xe5\xba\x8a\xe4\xbd\x8d\xe7\xb4\xa7\xe5\xbc\xa0" C_RESET, wc);
+    printf("\n");
+}
+
 void check_drug_warning(void) {
     DrugNode *head = load_drugs_list();
     DrugNode *current = head;

@@ -17,9 +17,10 @@ int register_user(User *new_user) {
     ui_menu_item(2, "注册医生");
     ui_menu_item(3, "注册患者");
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+    ui_menu_track_line();
     ui_menu_exit(0, "返回");
     ui_box_bottom();
-    
+
     int role_choice = get_menu_choice(0, 3);
     if (role_choice == 0) return ERROR_INVALID_INPUT;
     
@@ -144,39 +145,27 @@ int register_user(User *new_user) {
             ui_menu_item(2, "暂不选择");
             int dept_choice = get_menu_choice(1, 2);
             if (dept_choice == 1) {
-                ui_sub_header("可选科室");
-                printf(C_BOLD);
-                printf("  ");
-                ui_print_col("科室编号", 10);
-                ui_print_col("科室名称", 20);
-                printf("\n");
-                printf(C_RESET);
-                ui_divider();
-                DepartmentNode *curr = dept_head;
-                while (curr) {
-                    printf("  ");
-                    ui_print_col(curr->data.department_id, 10);
-                    ui_print_col(curr->data.name, 20);
-                    printf("\n");
-                    curr = curr->next;
-                }
-                printf(S_LABEL "  请输入科室编号: " C_RESET);
-                if (fgets(doctor_dept, sizeof(doctor_dept), stdin)) {
-                    doctor_dept[strcspn(doctor_dept, "\n")] = 0;
-                    DepartmentNode *curr2 = dept_head;
-                    int dept_found = 0;
-                    while (curr2) {
-                        if (strcmp(curr2->data.department_id, doctor_dept) == 0) {
-                            dept_found = 1;
-                            break;
-                        }
-                        curr2 = curr2->next;
+                int dc = count_department_list(dept_head);
+                if (dc > 0) {
+                    const char **di = malloc(dc * sizeof(const char *));
+                    char (*db)[70] = malloc(dc * sizeof(*db));
+                    int idx = 0;
+                    DepartmentNode *dp = dept_head;
+                    while (dp) {
+                        snprintf(db[idx], 70, "%s - %s", dp->data.department_id, dp->data.name);
+                        di[idx] = db[idx]; idx++; dp = dp->next;
                     }
-                    if (!dept_found) {
-                        ui_warn("科室编号不存在，将暂不分配科室。");
+                    int sel = ui_search_list("选择科室", di, dc);
+                    free((void*)di); free(db);
+                    if (sel >= 0) {
+                        dp = dept_head;
+                        for (int j = 0; j < sel; j++) dp = dp->next;
+                        strcpy(doctor_dept, dp->data.department_id);
+                    } else {
                         doctor_dept[0] = '\0';
                     }
                 } else {
+                    ui_warn("暂无科室数据，请联系管理员添加。");
                     doctor_dept[0] = '\0';
                 }
             } else {
@@ -206,9 +195,10 @@ int login(User *logged_user) {
     ui_menu_item(2, "医生登录");
     ui_menu_item(3, "患者登录");
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+    ui_menu_track_line();
     ui_menu_exit(0, "返回");
     ui_box_bottom();
-    
+
     int role_choice = get_menu_choice(0, 3);
     if (role_choice == 0) return ERROR_INVALID_INPUT;
     

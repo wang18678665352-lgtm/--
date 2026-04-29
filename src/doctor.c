@@ -1,4 +1,4 @@
-﻿#include "doctor.h"
+#include "doctor.h"
 #include "public.h"
 #include "ui_utils.h"
 
@@ -218,64 +218,75 @@ static void show_current_doctor_registrations(const Doctor *doctor) {
     int found_appt = 0;
     int found_onsite = 0;
 
-    ui_sub_header("预约挂号");
-    printf("  ");
-    ui_print_col("预约单号", 16);
-    ui_print_col("就诊日期", 12);
-    ui_print_col("时段", 6);
-    ui_print_col("患者", 10);
-    ui_print_col("科室", 10);
-    ui_print_col("状态", 8);
-    printf("\n");
-    ui_divider();
-
-    while (current_appointment) {
-        if (strcmp(current_appointment->data.doctor_id, doctor->doctor_id) == 0) {
-            char patient_name[MAX_NAME];
-            print_patient_name_by_id(current_appointment->data.patient_id, patient_name, sizeof(patient_name));
-            printf("  ");
-            ui_print_col(current_appointment->data.appointment_id, 16);
-            ui_print_col(current_appointment->data.appointment_date, 12);
-            ui_print_col(current_appointment->data.appointment_time, 6);
-            ui_print_col(patient_name, 10);
-            ui_print_col(current_appointment->data.department_id, 10);
-            ui_print_col(current_appointment->data.status, 8);
-            printf("\n");
-            found_appt++;
+    { // paginated: 预约挂号
+        int ac = count_appointment_list(appointment_head);
+        // first pass: count matching
+        int match = 0;
+        AppointmentNode *ap = appointment_head;
+        while (ap) {
+            if (strcmp(ap->data.doctor_id, doctor->doctor_id) == 0) match++;
+            ap = ap->next;
         }
-        current_appointment = current_appointment->next;
+
+        if (match > 0) {
+            const char **ai = malloc(match * sizeof(const char *));
+            char (*ab)[90] = malloc(match * sizeof(*ab));
+            int idx = 0;
+            ap = appointment_head;
+            while (ap && idx < match) {
+                if (strcmp(ap->data.doctor_id, doctor->doctor_id) == 0) {
+                    char pn[MAX_NAME];
+                    print_patient_name_by_id(ap->data.patient_id, pn, sizeof(pn));
+                    snprintf(ab[idx], 90, "%-16s %-12s %-6s %-10s %-10s %-8s",
+                             ap->data.appointment_id, ap->data.appointment_date,
+                             ap->data.appointment_time, pn,
+                             ap->data.department_id, ap->data.status);
+                    ai[idx] = ab[idx];
+                    idx++;
+                    found_appt++;
+                }
+                ap = ap->next;
+            }
+            ui_paginate(ai, match, 15, "预约挂号");
+            free((void*)ai); free(ab);
+        }
     }
+
     if (!found_appt) {
         printf("暂无预约挂号记录。\n");
     }
 
-    ui_sub_header("现场挂号(排队)");
-    printf("  ");
-    ui_print_col("现场单号", 16);
-    ui_print_col("患者", 10);
-    ui_print_col("排队号", 8);
-    ui_print_col("科室", 10);
-    ui_print_col("状态", 10);
-    printf("\n");
-    ui_divider();
-
-    while (current_onsite) {
-        if (strcmp(current_onsite->data.doctor_id, doctor->doctor_id) == 0) {
-            char patient_name[MAX_NAME];
-            char queue_no[16];
-            print_patient_name_by_id(current_onsite->data.patient_id, patient_name, sizeof(patient_name));
-            snprintf(queue_no, sizeof(queue_no), "%d", current_onsite->data.queue_number);
-            printf("  ");
-            ui_print_col(current_onsite->data.onsite_id, 16);
-            ui_print_col(patient_name, 10);
-            ui_print_col(queue_no, 8);
-            ui_print_col(current_onsite->data.department_id, 10);
-            ui_print_col(current_onsite->data.status, 10);
-            printf("\n");
-            found_onsite++;
+    { // paginated: 现场挂号
+        int match = 0;
+        OnsiteRegistrationNode *on = onsite_queue.front;
+        while (on) {
+            if (strcmp(on->data.doctor_id, doctor->doctor_id) == 0) match++;
+            on = on->next;
         }
-        current_onsite = current_onsite->next;
+
+        if (match > 0) {
+            const char **oi = malloc(match * sizeof(const char *));
+            char (*ob)[80] = malloc(match * sizeof(*ob));
+            int idx = 0;
+            on = onsite_queue.front;
+            while (on && idx < match) {
+                if (strcmp(on->data.doctor_id, doctor->doctor_id) == 0) {
+                    char pn[MAX_NAME];
+                    print_patient_name_by_id(on->data.patient_id, pn, sizeof(pn));
+                    snprintf(ob[idx], 80, "%-16s %-10s 排%03d  %-10s %-10s",
+                             on->data.onsite_id, pn, on->data.queue_number,
+                             on->data.department_id, on->data.status);
+                    oi[idx] = ob[idx];
+                    idx++;
+                    found_onsite++;
+                }
+                on = on->next;
+            }
+            ui_paginate(oi, match, 15, "现场挂号(排队)");
+            free((void*)oi); free(ob);
+        }
     }
+
     if (!found_onsite) {
         printf("暂无现场排队记录。\n");
     }
@@ -365,12 +376,12 @@ int doctor_consultation_menu(const User *current_user) {
 
     // 构建当前医生接诊候选列表
     {
-        const char *svc_list[200];
+        const char *svc_list[500];
         int svc_count = 0;
         {
             AppointmentNode *ah = load_appointments_list();
             AppointmentNode *ap = ah;
-            while (ap && svc_count < 100) {
+            while (ap && svc_count < 200) {
                 if (strcmp(ap->data.doctor_id, current_doctor->doctor_id) == 0 &&
                     strcmp(ap->data.status, "已预约") == 0) {
                     svc_list[svc_count++] = ap->data.appointment_id;
@@ -382,7 +393,7 @@ int doctor_consultation_menu(const User *current_user) {
         {
             OnsiteRegistrationQueue oq = load_onsite_registration_queue();
             OnsiteRegistrationNode *on = oq.front;
-            while (on && svc_count < 200) {
+            while (on && svc_count < 500) {
                 if (strcmp(on->data.doctor_id, current_doctor->doctor_id) == 0 &&
                     strcmp(on->data.status, "排队中") == 0) {
                     svc_list[svc_count++] = on->data.onsite_id;
@@ -476,34 +487,43 @@ int doctor_prescribe_menu(const User *current_user) {
     }
 
     ui_header("开药功能");
-    printf("  ");
-    ui_print_col("病历编号", 16);
-    ui_print_col("患者编号", 14);
-    ui_print_col("诊断时间", 20);
-    ui_print_col("状态", 10);
-    printf("\n");
-    ui_divider();
 
     record_head = load_medical_records_list();
-    current_record = record_head;
-    while (current_record) {
-        if (strcmp(current_record->data.doctor_id, current_doctor->doctor_id) == 0) {
-            printf("  ");
-            ui_print_col(current_record->data.record_id, 16);
-            ui_print_col(current_record->data.patient_id, 14);
-            ui_print_col(current_record->data.diagnosis_date, 20);
-            ui_print_col(current_record->data.status, 10);
-            printf("\n");
+    {
+        int rc = count_medical_record_list(record_head);
+        MedicalRecordNode *mr = record_head;
+        // first pass: count matching
+        int match = 0;
+        while (mr) {
+            if (strcmp(mr->data.doctor_id, current_doctor->doctor_id) == 0) match++;
+            mr = mr->next;
         }
-        current_record = current_record->next;
+        if (match > 0) {
+            const char **ri = malloc(match * sizeof(const char *));
+            char (*rb)[80] = malloc(match * sizeof(*rb));
+            int idx = 0;
+            mr = record_head;
+            while (mr && idx < match) {
+                if (strcmp(mr->data.doctor_id, current_doctor->doctor_id) == 0) {
+                    snprintf(rb[idx], 80, "%-16s %-14s %-20s %-10s",
+                             mr->data.record_id, mr->data.patient_id,
+                             mr->data.diagnosis_date, mr->data.status);
+                    ri[idx] = rb[idx]; idx++; mr = mr->next;
+                } else {
+                    mr = mr->next;
+                }
+            }
+            ui_paginate(ri, match, 15, "病历列表");
+            free((void*)ri); free(rb);
+        }
     }
 
     // 构建病历候选列表
     {
-        const char *rec_list[200];
+        const char *rec_list[500];
         int rec_count = 0;
         MedicalRecordNode *rc = record_head;
-        while (rc && rec_count < 200) {
+        while (rc && rec_count < 500) {
             if (strcmp(rc->data.doctor_id, current_doctor->doctor_id) == 0) {
                 rec_list[rec_count++] = rc->data.record_id;
             }
@@ -538,7 +558,7 @@ int doctor_prescribe_menu(const User *current_user) {
         PrescriptionNode *all_pres = load_prescriptions_list();
         PrescriptionNode *p_iter = all_pres;
         int rec_count = 0;
-        char rec_drugs[50][MAX_ID];
+        char rec_drugs[100][MAX_ID];
         int i;
 
         memset(rec_drugs, 0, sizeof(rec_drugs));
@@ -548,7 +568,7 @@ int doctor_prescribe_menu(const User *current_user) {
                 for (i = 0; i < rec_count; i++) {
                     if (strcmp(rec_drugs[i], p_iter->data.drug_id) == 0) { dup = 1; break; }
                 }
-                if (!dup && rec_count < 50) {
+                if (!dup && rec_count < 100) {
                     strcpy(rec_drugs[rec_count], p_iter->data.drug_id);
                     rec_count++;
                 }
@@ -582,27 +602,23 @@ int doctor_prescribe_menu(const User *current_user) {
         }
     }
 
-    ui_sub_header("所有可用药品");
-    printf("  ");
-    ui_print_col("药品编号", 10);
-    ui_print_col("药品名称", 16);
-    ui_print_col("单价", 10);
-    ui_print_col("库存", 8);
-    ui_print_col("报销率", 8);
-    printf("\n");
-    ui_divider();
-
     drug_head = load_drugs_list();
-    current_drug = drug_head;
-    while (current_drug) {
-        printf("  ");
-        ui_print_col(current_drug->data.drug_id, 10);
-        ui_print_col(current_drug->data.name, 16);
-        ui_print_col_float(current_drug->data.price, 10);
-        ui_print_col_int(current_drug->data.stock_num, 8);
-        ui_print_col_float(current_drug->data.reimbursement_ratio, 8);
-        printf("\n");
-        current_drug = current_drug->next;
+    {
+        int dc = count_drug_list(drug_head);
+        if (dc > 0) {
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[100] = malloc(dc * sizeof(*db));
+            int idx = 0;
+            DrugNode *du = drug_head;
+            while (du) {
+                snprintf(db[idx], 100, "%-10s %-16s %8.2f %4d  %5.0f%%",
+                         du->data.drug_id, du->data.name, du->data.price,
+                         du->data.stock_num, du->data.reimbursement_ratio * 100);
+                di[idx] = db[idx]; idx++; du = du->next;
+            }
+            ui_paginate(di, dc, 15, "所有可用药品");
+            free((void*)di); free(db);
+        }
     }
 
     printf("\n");
@@ -754,31 +770,44 @@ int doctor_ward_call_menu(const User *current_user) {
 
     ui_header("病房被叫提醒");
     call_head = load_ward_calls_list();
-    current_call = call_head;
 
-    printf("  ");
-    ui_print_col("呼叫单号", 16);
-    ui_print_col("病房", 10);
-    ui_print_col("患者", 10);
-    ui_print_col("状态", 12);
-    ui_print_col("创建时间", 20);
-    printf("\n");
-    ui_divider();
-    while (current_call) {
-        if (strcmp(current_call->data.department_id, current_doctor->department_id) == 0) {
-            char patient_name[MAX_NAME];
-            print_patient_name_by_id(current_call->data.patient_id, patient_name, sizeof(patient_name));
-            printf("  ");
-            ui_print_col(current_call->data.call_id, 16);
-            ui_print_col(current_call->data.ward_id, 10);
-            ui_print_col(patient_name, 10);
-            ui_print_col(current_call->data.status, 12);
-            ui_print_col(current_call->data.create_time, 20);
-            printf("\n");
-            printf("说明: %s\n", current_call->data.message);
-            found++;
+    {
+        WardCallNode *wc = call_head;
+        int match = 0;
+        while (wc) {
+            if (strcmp(wc->data.department_id, current_doctor->department_id) == 0) match++;
+            wc = wc->next;
         }
-        current_call = current_call->next;
+        if (match > 0) {
+            const char **ci = malloc(match * sizeof(const char *));
+            char (*cb)[120] = malloc(match * sizeof(*cb));
+            int idx = 0;
+            wc = call_head;
+            while (wc && idx < match) {
+                if (strcmp(wc->data.department_id, current_doctor->department_id) == 0) {
+                    char pn[MAX_NAME];
+                    print_patient_name_by_id(wc->data.patient_id, pn, sizeof(pn));
+                    snprintf(cb[idx], 120, "%-16s %-10s %-10s %-12s %-20s",
+                             wc->data.call_id, wc->data.ward_id, pn,
+                             wc->data.status, wc->data.create_time);
+                    ci[idx] = cb[idx]; idx++;
+                    found++;
+                }
+                wc = wc->next;
+            }
+            ui_paginate(ci, match, 15, "病房呼叫记录");
+            // Print messages separately after pagination
+            if (match <= 15) {
+                wc = call_head;
+                while (wc) {
+                    if (strcmp(wc->data.department_id, current_doctor->department_id) == 0) {
+                        printf(C_DIM "  %s: %s" C_RESET "\n", wc->data.call_id, wc->data.message);
+                    }
+                    wc = wc->next;
+                }
+            }
+            free((void*)ci); free(cb);
+        }
     }
 
     if (!found) {
@@ -799,70 +828,94 @@ int doctor_ward_call_menu(const User *current_user) {
         }
 
         if (action == 1) {
-            printf("\n请输入要处理的呼叫单号: ");
-            if (fgets(call_id, sizeof(call_id), stdin) == NULL) {
-                free_ward_call_list(call_head);
-                free(current_doctor);
-                return ERROR_INVALID_INPUT;
-            }
-            call_id[strcspn(call_id, "\n")] = 0;
-
-            current_call = call_head;
-            while (current_call) {
-                if (strcmp(current_call->data.call_id, call_id) == 0 &&
-                    strcmp(current_call->data.department_id, current_doctor->department_id) == 0) {
-                    strcpy(current_call->data.status, "已处理");
-                    save_ward_calls_list(call_head);
-                    ui_ok("病房呼叫已处理。");
-                    free_ward_call_list(call_head);
-                    free(current_doctor);
-                    return SUCCESS;
+            {
+                int match = 0;
+                WardCallNode *wc = call_head;
+                while (wc) {
+                    if (strcmp(wc->data.department_id, current_doctor->department_id) == 0 &&
+                        strcmp(wc->data.status, "待处理") == 0) match++;
+                    wc = wc->next;
                 }
-                current_call = current_call->next;
+                if (match == 0) {
+                    ui_warn("暂无待处理的呼叫。");
+                } else {
+                    const char **ci = malloc(match * sizeof(const char *));
+                    char (*cb)[120] = malloc(match * sizeof(*cb));
+                    int idx = 0;
+                    wc = call_head;
+                    while (wc && idx < match) {
+                        if (strcmp(wc->data.department_id, current_doctor->department_id) == 0 &&
+                            strcmp(wc->data.status, "待处理") == 0) {
+                            char pn[MAX_NAME];
+                            print_patient_name_by_id(wc->data.patient_id, pn, sizeof(pn));
+                            snprintf(cb[idx], 120, "%s - %s (%s)", wc->data.call_id, pn, wc->data.message);
+                            ci[idx] = cb[idx]; idx++;
+                        }
+                        wc = wc->next;
+                    }
+                    int sel = ui_search_list("选择要处理的呼叫", ci, match);
+                    free((void*)ci); free(cb);
+                    if (sel >= 0) {
+                        wc = call_head;
+                        for (int j = 0; j < sel; j++) wc = wc->next;
+                        strcpy(wc->data.status, "已处理");
+                        save_ward_calls_list(call_head);
+                        ui_ok("病房呼叫已处理。");
+                    }
+                }
             }
-            printf("未找到符合条件的呼叫单号。\n");
         } else if (action == 2) {
             char ward_id[MAX_ID];
             char patient_id[MAX_ID];
             char msg[200];
             WardCall new_call;
-            PatientNode *ph = load_patients_list();
-            PatientNode *pc = ph;
 
             ui_sub_header("发起病房呼叫");
 
-            printf("可选病房:\n");
+            // 选择病房
             {
                 WardNode *wh = load_wards_list();
-                WardNode *wc = wh;
-                while (wc) {
-                    printf("  %s - %s (剩余床位:%d)\n", wc->data.ward_id, wc->data.type, wc->data.remain_beds);
-                    wc = wc->next;
+                int wc = count_ward_list(wh);
+                if (wc == 0) { ui_warn("暂无病房数据。"); free_ward_list(wh); free_ward_call_list(call_head); free(current_doctor); return SUCCESS; }
+
+                const char **wi = malloc(wc * sizeof(const char *));
+                char (*wb)[80] = malloc(wc * sizeof(*wb));
+                int idx = 0;
+                WardNode *wu = wh;
+                while (wu) {
+                    snprintf(wb[idx], 80, "%s - %s (剩余:%d)", wu->data.ward_id, wu->data.type, wu->data.remain_beds);
+                    wi[idx] = wb[idx]; idx++; wu = wu->next;
                 }
+                int sel = ui_search_list("选择病房", wi, wc);
+                free((void*)wi); free(wb);
+                if (sel < 0) { free_ward_list(wh); free_ward_call_list(call_head); free(current_doctor); return SUCCESS; }
+                wu = wh;
+                for (int j = 0; j < sel; j++) wu = wu->next;
+                strcpy(ward_id, wu->data.ward_id);
                 free_ward_list(wh);
             }
 
-            printf("请输入病房编号: ");
-            if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) {
+            // 选择患者
+            {
+                PatientNode *ph = load_patients_list();
+                int pc = count_patient_list(ph);
+                if (pc == 0) { free_patient_list(ph); free_ward_call_list(call_head); free(current_doctor); return SUCCESS; }
+
+                const char **pi = malloc(pc * sizeof(const char *));
+                char (*pb)[90] = malloc(pc * sizeof(*pb));
+                int idx = 0;
+                PatientNode *pu = ph;
+                while (pu) {
+                    snprintf(pb[idx], 90, "%s - %s (%s)", pu->data.patient_id, pu->data.name, pu->data.patient_type);
+                    pi[idx] = pb[idx]; idx++; pu = pu->next;
+                }
+                int sel = ui_search_list("选择患者", pi, pc);
+                free((void*)pi); free(pb);
+                if (sel < 0) { free_patient_list(ph); free_ward_call_list(call_head); free(current_doctor); return SUCCESS; }
+                pu = ph;
+                for (int j = 0; j < sel; j++) pu = pu->next;
+                strcpy(patient_id, pu->data.patient_id);
                 free_patient_list(ph);
-                free_ward_call_list(call_head);
-                free(current_doctor);
-                return ERROR_INVALID_INPUT;
-            }
-            ward_id[strcspn(ward_id, "\n")] = 0;
-
-            printf("可选患者:\n");
-            while (pc) {
-                printf("  %s - %s\n", pc->data.patient_id, pc->data.name);
-                pc = pc->next;
-            }
-            free_patient_list(ph);
-
-            printf("\n");
-            if (smart_patient_input(current_doctor->doctor_id, "患者编号", patient_id, sizeof(patient_id)) != 1 || patient_id[0] == 0) {
-                free_ward_call_list(call_head);
-                free(current_doctor);
-                return ERROR_INVALID_INPUT;
             }
 
             printf("请输入呼叫说明: ");
@@ -1092,47 +1145,34 @@ int doctor_template_menu(const User *current_user) {
     TemplateNode *head = load_templates_list();
     ui_header("模板管理");
 
-    ui_sub_header("诊断模板");
-    printf("  " C_BOLD "%-5s %-16s %s" C_RESET "\n", "序号", "快捷名", "内容");
-    ui_divider();
+    // ---- 模板列表 paginated ----
     {
-        TemplateNode *cur = head;
-        int idx = 0;
-        while (cur) {
-            if (strcmp(cur->data.category, "诊断") == 0) {
-                printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %-16s %s\n",
-                       ++idx, cur->data.shortcut, cur->data.text);
-            }
-            cur = cur->next;
+        int cat_match(const char *cat) {
+            TemplateNode *c = head; int n = 0;
+            while (c) { if (strcmp(c->data.category, cat) == 0) n++; c = c->next; }
+            return n;
         }
-    }
-    ui_sub_header("治疗模板");
-    printf("  " C_BOLD "%-5s %-16s %s" C_RESET "\n", "序号", "快捷名", "内容");
-    ui_divider();
-    {
-        TemplateNode *cur = head;
-        int idx = 0;
-        while (cur) {
-            if (strcmp(cur->data.category, "治疗") == 0) {
-                printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %-16s %s\n",
-                       ++idx, cur->data.shortcut, cur->data.text);
+        void show_cat(const char *cat_label) {
+            int m = cat_match(cat_label);
+            if (m == 0) return;
+            const char **ti = malloc(m * sizeof(const char *));
+            char (*tb)[120] = malloc(m * sizeof(*tb));
+            int idx = 0;
+            TemplateNode *c = head;
+            while (c && idx < m) {
+                if (strcmp(c->data.category, cat_label) == 0) {
+                    snprintf(tb[idx], 120, "%-16s %s", c->data.shortcut, c->data.text);
+                    ti[idx] = tb[idx]; idx++;
+                }
+                c = c->next;
             }
-            cur = cur->next;
+            char title[64]; snprintf(title, sizeof(title), "%s", cat_label);
+            ui_paginate(ti, m, 15, title);
+            free((void*)ti); free(tb);
         }
-    }
-    ui_sub_header("检查模板");
-    printf("  " C_BOLD "%-5s %-16s %s" C_RESET "\n", "序号", "快捷名", "内容");
-    ui_divider();
-    {
-        TemplateNode *cur = head;
-        int idx = 0;
-        while (cur) {
-            if (strcmp(cur->data.category, "检查") == 0) {
-                printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %-16s %s\n",
-                       ++idx, cur->data.shortcut, cur->data.text);
-            }
-            cur = cur->next;
-        }
+        show_cat("诊断");
+        show_cat("治疗");
+        show_cat("检查");
     }
 
     ui_divider();
@@ -1185,24 +1225,30 @@ int doctor_template_menu(const User *current_user) {
         save_templates_list(head);
         ui_ok("模板已添加!");
     } else if (choice == 2) {
-        printf(S_LABEL "  请输入要删除的模板编号(Txxx): " C_RESET);
-        char tid[MAX_ID];
-        if (fgets(tid, sizeof(tid), stdin) == NULL) { free_template_list(head); return ERROR_INVALID_INPUT; }
-        tid[strcspn(tid, "\n")] = 0;
-        TemplateNode *prev = NULL, *cur = head;
-        while (cur) {
-            if (strcmp(cur->data.template_id, tid) == 0) {
-                if (!prev) head = cur->next;
-                else prev->next = cur->next;
-                free(cur);
-                save_templates_list(head);
-                ui_ok("模板已删除!");
-                break;
-            }
-            prev = cur;
-            cur = cur->next;
+        int tc = 0;
+        TemplateNode *tn = head;
+        while (tn) { tc++; tn = tn->next; }
+        if (tc == 0) { ui_warn("暂无模板。"); free_template_list(head); return SUCCESS; }
+
+        const char **ti = malloc(tc * sizeof(const char *));
+        char (*tb)[120] = malloc(tc * sizeof(*tb));
+        int idx = 0;
+        tn = head;
+        while (tn) {
+            snprintf(tb[idx], 120, "%s - %s: %s", tn->data.template_id, tn->data.shortcut, tn->data.text);
+            ti[idx] = tb[idx]; idx++; tn = tn->next;
         }
-        if (!cur) ui_err("未找到该模板编号。");
+        int sel = ui_search_list("选择要删除的模板", ti, tc);
+        free((void*)ti); free(tb);
+        if (sel < 0) { free_template_list(head); return SUCCESS; }
+
+        TemplateNode *prev = NULL, *cur = head;
+        for (int j = 0; j < sel; j++) { prev = cur; cur = cur->next; }
+        if (!prev) head = cur->next;
+        else prev->next = cur->next;
+        free(cur);
+        save_templates_list(head);
+        ui_ok("模板已删除!");
     }
 
     free_template_list(head);

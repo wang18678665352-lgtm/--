@@ -5,157 +5,166 @@
 
 static void list_departments(void) {
     DepartmentNode *head = load_departments_list();
-    DepartmentNode *current = head;
+    int count = count_department_list(head);
 
-    ui_sub_header("科室列表");
-    printf("  ");
-    ui_print_col("科室编号", 10);
-    ui_print_col("科室名称", 15);
-    ui_print_col("负责人", 15);
-    ui_print_col("联系电话", 15);
-    printf("\n");
-    ui_divider();
-    while (current) {
-        printf("  ");
-        ui_print_col(current->data.department_id, 10);
-        ui_print_col(current->data.name, 15);
-        ui_print_col(current->data.leader, 15);
-        ui_print_col(current->data.phone, 15);
-        printf("\n");
-        current = current->next;
-    }
-
-    if (!head) {
+    if (count == 0) {
         ui_warn("暂无科室数据。");
+        free_department_list(head);
+        return;
     }
 
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[100] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    DepartmentNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 100, "%-10s %-16s %-16s %-16s",
+                 cur->data.department_id,
+                 cur->data.name,
+                 cur->data.leader,
+                 cur->data.phone);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "科室列表");
+
+    free((void*)items);
+    free(buf);
     free_department_list(head);
 }
 
 static void list_doctors(void) {
     DoctorNode *head = load_doctors_list();
-    DoctorNode *current = head;
+    int count = count_doctor_list(head);
 
-    ui_sub_header("医生列表");
-    printf("  ");
-    ui_print_col("医生编号", 10);
-    ui_print_col("姓名", 12);
-    ui_print_col("科室", 10);
-    ui_print_col("职称", 14);
-    ui_print_col("工作量", 6);
-    printf("\n");
-    ui_divider();
-    while (current) {
-        printf("  ");
-        ui_print_col(current->data.doctor_id, 10);
-        ui_print_col(current->data.name, 12);
-        ui_print_col(current->data.department_id[0] ? current->data.department_id : "未分配", 10);
-        ui_print_col(current->data.title, 14);
-        ui_print_col_int(current->data.busy_level, 6);
-        printf("\n");
-        current = current->next;
-    }
-
-    if (!head) {
+    if (count == 0) {
         ui_warn("暂无医生数据。");
+        free_doctor_list(head);
+        return;
     }
 
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[100] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    DoctorNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 100, "%-10s %-12s %-10s %-14s %3d",
+                 cur->data.doctor_id,
+                 cur->data.name,
+                 cur->data.department_id[0] ? cur->data.department_id : "未分配",
+                 cur->data.title,
+                 cur->data.busy_level);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "医生列表");
+
+    free((void*)items);
+    free(buf);
     free_doctor_list(head);
 }
 
 static void list_patients(void) {
     PatientNode *head = load_patients_list();
-    PatientNode *current = head;
+    int count = count_patient_list(head);
 
-    ui_sub_header("患者列表");
-    printf("  ");
-    ui_print_col("患者编号", 10);
-    ui_print_col("姓名", 10);
-    ui_print_col("类型", 8);
-    ui_print_col("阶段", 10);
-    ui_print_col("电话", 16);
-    ui_print_col("紧急", 6);
-    printf("\n");
-    ui_divider();
-    while (current) {
-        printf("  ");
-        ui_print_col(current->data.patient_id, 10);
-        ui_print_col(current->data.name, 10);
-        ui_print_col(current->data.patient_type, 8);
-        ui_print_col(current->data.treatment_stage, 10);
-        ui_print_col(current->data.phone, 16);
-        ui_print_col(current->data.is_emergency ? "是" : "否", 6);
-        printf("\n");
-        current = current->next;
-    }
-
-    if (!head) {
+    if (count == 0) {
         ui_warn("暂无患者数据。");
+        free_patient_list(head);
+        return;
     }
 
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[120] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    PatientNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 120, "%-10s %-10s %-8s %-10s %-16s %s",
+                 cur->data.patient_id,
+                 cur->data.name,
+                 cur->data.patient_type,
+                 cur->data.treatment_stage,
+                 cur->data.phone,
+                 cur->data.is_emergency ? "是" : "否");
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "患者列表");
+
+    free((void*)items);
+    free(buf);
     free_patient_list(head);
 }
 static void list_drugs(void) {
     DrugNode *head = load_drugs_list();
-    DrugNode *current = head;
+    int count = count_drug_list(head);
 
-    ui_sub_header("药品列表");
-    printf("  ");
-    ui_print_col("药品编号", 10);
-    ui_print_col("名称", 16);
-    ui_print_col("单价", 10);
-    ui_print_col("库存", 8);
-    ui_print_col("预警值", 8);
-    ui_print_col("报销率", 10);
-    printf("\n");
-    ui_divider();
-    while (current) {
-        printf("  ");
-        ui_print_col(current->data.drug_id, 10);
-        ui_print_col(current->data.name, 16);
-        ui_print_col_float(current->data.price, 10);
-        ui_print_col_int(current->data.stock_num, 8);
-        ui_print_col_int(current->data.warning_line, 8);
-        ui_print_col_float(current->data.reimbursement_ratio, 10);
-        printf("\n");
-        current = current->next;
-    }
-
-    if (!head) {
+    if (count == 0) {
         ui_warn("暂无药品数据。");
+        free_drug_list(head);
+        return;
     }
 
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[120] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    DrugNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 120, "%-10s %-16s %8.2f %4d %4d %5.0f%%",
+                 cur->data.drug_id,
+                 cur->data.name,
+                 cur->data.price,
+                 cur->data.stock_num,
+                 cur->data.warning_line,
+                 cur->data.reimbursement_ratio * 100);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "药品列表");
+
+    free((void*)items);
+    free(buf);
     free_drug_list(head);
 }
 
 static void list_wards(void) {
     WardNode *head = load_wards_list();
-    WardNode *current = head;
+    int count = count_ward_list(head);
 
-    ui_sub_header("病房列表");
-    printf("  ");
-    ui_print_col("病房编号", 10);
-    ui_print_col("类型", 15);
-    ui_print_col("总床位", 10);
-    ui_print_col("剩余", 8);
-    ui_print_col("预警值", 8);
-    printf("\n");
-    ui_divider();
-    while (current) {
-        printf("  ");
-        ui_print_col(current->data.ward_id, 10);
-        ui_print_col(current->data.type, 15);
-        ui_print_col_int(current->data.total_beds, 10);
-        ui_print_col_int(current->data.remain_beds, 8);
-        ui_print_col_int(current->data.warning_line, 8);
-        printf("\n");
-        current = current->next;
-    }
-
-    if (!head) {
+    if (count == 0) {
         ui_warn("暂无病房数据。");
+        free_ward_list(head);
+        return;
     }
 
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[100] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    WardNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 100, "%-10s %-15s %3d张 %3d张 %3d",
+                 cur->data.ward_id,
+                 cur->data.type,
+                 cur->data.total_beds,
+                 cur->data.remain_beds,
+                 cur->data.warning_line);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "病房列表");
+
+    free((void*)items);
+    free(buf);
     free_ward_list(head);
 }
 
@@ -166,7 +175,7 @@ void admin_main_menu(const User *current_user) {
     ui_menu_item(3, "患者管理");
     ui_menu_item(4, "药物管理");
     ui_menu_item(5, "病房管理");
-    ui_menu_item(6, "报表管理");
+    ui_menu_item(6, "分析报表");
 }
 
 int admin_department_menu(const User *current_user) {
@@ -242,6 +251,11 @@ int admin_department_menu(const User *current_user) {
                 return ERROR_INVALID_INPUT;
             }
             phone[strcspn(phone, "\n")] = 0;
+            if (!is_valid_phone(phone)) {
+                ui_err("电话号码无效! 需要7-15位纯数字。");
+                free_department_list(head);
+                return ERROR_INVALID_INPUT;
+            }
 
             memset(&dept, 0, sizeof(dept));
             strcpy(dept.department_id, dept_id);
@@ -267,23 +281,32 @@ int admin_department_menu(const User *current_user) {
             free_department_list(head);
             printf("科室 %s 创建成功!\n", dept_id);
             return SUCCESS;
-        case 3:
-            list_departments();
-            printf("\n请输入要修改的科室编号: ");
-            if (fgets(dept_id, sizeof(dept_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            dept_id[strcspn(dept_id, "\n")] = 0;
-
+        case 3: {
             head = load_departments_list();
+            int dc = count_department_list(head);
+            if (dc == 0) { ui_warn("暂无科室数据。"); free_department_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[100] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DepartmentNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 100, "%s - %s", dcu->data.department_id, dcu->data.name);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的科室", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_department_list(head); return SUCCESS; }
+
             current = head;
-            while (current) {
-                if (strcmp(current->data.department_id, dept_id) == 0) break;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("科室不存在!");
-                free_department_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) current = current->next;
+            ui_sub_header("修改科室");
+            printf("  %-6s %s\n", "编号:", current->data.department_id);
+            printf("  %-6s %s\n", "名称:", current->data.name);
+            printf("  %-6s %s\n", "负责人:", current->data.leader);
+            printf("  %-6s %s\n", "电话:", current->data.phone);
+            ui_divider();
 
             printf("当前名称: %s, 输入新名称(直接回车不改): ", current->data.name);
             if (fgets(name, sizeof(name), stdin)) {
@@ -298,39 +321,49 @@ int admin_department_menu(const User *current_user) {
             printf("当前电话: %s, 输入新电话(直接回车不改): ", current->data.phone);
             if (fgets(phone, sizeof(phone), stdin)) {
                 phone[strcspn(phone, "\n")] = 0;
-                if (phone[0] != '\0') strcpy(current->data.phone, phone);
+                if (phone[0] != '\0') {
+                    if (!is_valid_phone(phone)) {
+                        ui_err("电话号码无效! 需要7-15位纯数字。");
+                        free_department_list(head);
+                        return ERROR_INVALID_INPUT;
+                    }
+                    strcpy(current->data.phone, phone);
+                }
             }
 
             save_departments_list(head);
             free_department_list(head);
-            printf("科室 %s 修改成功!\n", dept_id);
+            printf("科室修改成功!\n");
             return SUCCESS;
-        case 4:
-            list_departments();
-            printf("\n请输入要删除的科室编号: ");
-            if (fgets(dept_id, sizeof(dept_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            dept_id[strcspn(dept_id, "\n")] = 0;
-
+        }
+        case 4: {
             head = load_departments_list();
+            int dc = count_department_list(head);
+            if (dc == 0) { ui_warn("暂无科室数据。"); free_department_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[100] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DepartmentNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 100, "%s - %s", dcu->data.department_id, dcu->data.name);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的科室", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_department_list(head); return SUCCESS; }
+
             current = head;
             prev = NULL;
-            while (current) {
-                if (strcmp(current->data.department_id, dept_id) == 0) break;
-                prev = current;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("科室不存在!");
-                free_department_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
 
             {
                 DoctorNode *doc_head = load_doctors_list();
                 DoctorNode *doc_current = doc_head;
                 int has_doctor = 0;
                 while (doc_current) {
-                    if (strcmp(doc_current->data.department_id, dept_id) == 0) {
+                    if (strcmp(doc_current->data.department_id, current->data.department_id) == 0) {
                         has_doctor = 1;
                         break;
                     }
@@ -357,8 +390,9 @@ int admin_department_menu(const User *current_user) {
             free(current);
             save_departments_list(head);
             free_department_list(head);
-            printf("科室 %s 已删除!\n", dept_id);
+            printf("科室已删除!\n");
             return SUCCESS;
+        }
         default:
             return ERROR_INVALID_INPUT;
     }
@@ -386,23 +420,32 @@ int admin_doctor_menu(const User *current_user) {
         case 1:
             list_doctors();
             return SUCCESS;
-        case 2:
-            list_doctors();
-            printf("\n请输入要修改的医生编号: ");
-            if (fgets(doc_id, sizeof(doc_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            doc_id[strcspn(doc_id, "\n")] = 0;
-
+        case 2: {
             head = load_doctors_list();
+            int dc = count_doctor_list(head);
+            if (dc == 0) { ui_warn("暂无医生数据。"); free_doctor_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[100] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DoctorNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 100, "%s - %s (%s)", dcu->data.doctor_id, dcu->data.name, dcu->data.title);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的医生", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_doctor_list(head); return SUCCESS; }
+
             current = head;
-            while (current) {
-                if (strcmp(current->data.doctor_id, doc_id) == 0) break;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("医生不存在!");
-                free_doctor_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) current = current->next;
+            ui_sub_header("修改医生");
+            printf("  %-6s %s\n", "编号:", current->data.doctor_id);
+            printf("  %-6s %s\n", "姓名:", current->data.name);
+            printf("  %-6s %s\n", "职称:", current->data.title);
+            printf("  %-6s %s\n", "科室:", current->data.department_id[0] ? current->data.department_id : "未分配");
+            ui_divider();
 
             printf("当前姓名: %s, 输入新姓名(直接回车不改): ", current->data.name);
             if (fgets(input, sizeof(input), stdin)) {
@@ -452,25 +495,28 @@ int admin_doctor_menu(const User *current_user) {
             free_doctor_list(head);
             printf("医生信息修改成功!\n");
             return SUCCESS;
-        case 3:
-            list_doctors();
-            printf("\n请输入要删除的医生编号: ");
-            if (fgets(doc_id, sizeof(doc_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            doc_id[strcspn(doc_id, "\n")] = 0;
-
+        }
+        case 3: {
             head = load_doctors_list();
+            int dc = count_doctor_list(head);
+            if (dc == 0) { ui_warn("暂无医生数据。"); free_doctor_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[100] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DoctorNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 100, "%s - %s (%s)", dcu->data.doctor_id, dcu->data.name, dcu->data.title);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的医生", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_doctor_list(head); return SUCCESS; }
+
             current = head;
             prev = NULL;
-            while (current) {
-                if (strcmp(current->data.doctor_id, doc_id) == 0) break;
-                prev = current;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("医生不存在!");
-                free_doctor_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
 
             // Cascade check: verify no active appointments, records, or prescriptions
             {
@@ -478,7 +524,7 @@ int admin_doctor_menu(const User *current_user) {
                 AppointmentNode *apt_head = load_appointments_list();
                 AppointmentNode *apt_cur = apt_head;
                 while (apt_cur && !has_active) {
-                    if (strcmp(apt_cur->data.doctor_id, doc_id) == 0 &&
+                    if (strcmp(apt_cur->data.doctor_id, current->data.doctor_id) == 0 &&
                         strcmp(apt_cur->data.status, "已取消") != 0 &&
                         strcmp(apt_cur->data.status, "已完成") != 0 &&
                         strcmp(apt_cur->data.status, "已就诊") != 0) {
@@ -491,7 +537,7 @@ int admin_doctor_menu(const User *current_user) {
                     MedicalRecordNode *rec_head = load_medical_records_list();
                     MedicalRecordNode *rec_cur = rec_head;
                     while (rec_cur && !has_active) {
-                        if (strcmp(rec_cur->data.doctor_id, doc_id) == 0) {
+                        if (strcmp(rec_cur->data.doctor_id, current->data.doctor_id) == 0) {
                             has_active = 1;
                         }
                         rec_cur = rec_cur->next;
@@ -502,7 +548,7 @@ int admin_doctor_menu(const User *current_user) {
                     PrescriptionNode *pre_head = load_prescriptions_list();
                     PrescriptionNode *pre_cur = pre_head;
                     while (pre_cur && !has_active) {
-                        if (strcmp(pre_cur->data.doctor_id, doc_id) == 0) {
+                        if (strcmp(pre_cur->data.doctor_id, current->data.doctor_id) == 0) {
                             has_active = 1;
                         }
                         pre_cur = pre_cur->next;
@@ -529,8 +575,9 @@ int admin_doctor_menu(const User *current_user) {
             free(current);
             save_doctors_list(head);
             free_doctor_list(head);
-            printf("医生 %s 已删除!\n", doc_id);
+            printf("医生已删除!\n");
             return SUCCESS;
+        }
         default:
             return ERROR_INVALID_INPUT;
     }
@@ -559,23 +606,38 @@ int admin_patient_menu(const User *current_user) {
         case 1:
             list_patients();
             return SUCCESS;
-        case 2:
-            list_patients();
-            printf("\n请输入要修改的患者编号: ");
-            if (fgets(patient_id, sizeof(patient_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            patient_id[strcspn(patient_id, "\n")] = 0;
-
+        case 2: {
             head = load_patients_list();
+            int pc = count_patient_list(head);
+            if (pc == 0) { ui_warn("暂无患者数据。"); free_patient_list(head); return SUCCESS; }
+
+            const char **pi = malloc(pc * sizeof(const char *));
+            char (*pb)[120] = malloc(pc * sizeof(*pb));
+            int pi_idx = 0;
+            PatientNode *pcu = head;
+            while (pcu) {
+                snprintf(pb[pi_idx], 120, "%s - %s (%s)", pcu->data.patient_id, pcu->data.name, pcu->data.patient_type);
+                pi[pi_idx] = pb[pi_idx]; pi_idx++; pcu = pcu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的患者", pi, pc);
+            free((void*)pi); free(pb);
+            if (sel < 0) { free_patient_list(head); return SUCCESS; }
+
             current = head;
-            while (current) {
-                if (strcmp(current->data.patient_id, patient_id) == 0) break;
-                current = current->next;
+            for (int j = 0; j < sel; j++) current = current->next;
+            ui_sub_header("修改患者");
+            printf("  %-8s %s\n", "编号:", current->data.patient_id);
+            printf("  %-8s %s\n", "姓名:", current->data.name);
+            printf("  %-8s %s\n", "性别:", current->data.gender);
+            {
+                char age_str[16];
+                snprintf(age_str, sizeof(age_str), "%d", current->data.age);
+                printf("  %-8s %s\n", "年龄:", age_str);
             }
-            if (!current) {
-                ui_err("患者不存在!");
-                free_patient_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            printf("  %-8s %s\n", "电话:", current->data.phone);
+            printf("  %-8s %s\n", "类型:", current->data.patient_type);
+            ui_divider();
 
             printf("当前姓名: %s, 输入新姓名(直接回车不改): ", current->data.name);
             if (fgets(input, sizeof(input), stdin)) {
@@ -590,15 +652,31 @@ int admin_patient_menu(const User *current_user) {
             }
 
             printf("当前年龄: %d, 输入新年龄(-1不改): ", current->data.age);
-            if (scanf("%d", &int_input) == 1 && int_input >= 0) {
-                current->data.age = int_input;
+            if (scanf("%d", &int_input) == 1) {
+                if (int_input == -1) {
+                    /* keep existing */
+                } else if (is_valid_age(int_input)) {
+                    current->data.age = int_input;
+                } else {
+                    ui_err("年龄必须在 0-150 之间。");
+                    clear_input_buffer();
+                    free_patient_list(head);
+                    return ERROR_INVALID_INPUT;
+                }
             }
             clear_input_buffer();
 
             printf("当前电话: %s, 输入新电话(直接回车不改): ", current->data.phone);
             if (fgets(input, sizeof(input), stdin)) {
                 input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') strcpy(current->data.phone, input);
+                if (input[0] != '\0') {
+                    if (!is_valid_phone(input)) {
+                        ui_err("电话号码无效! 需要7-15位纯数字。");
+                        free_patient_list(head);
+                        return ERROR_INVALID_INPUT;
+                    }
+                    strcpy(current->data.phone, input);
+                }
             }
 
             printf("当前患者类型(%s), 输入新类型(普通/医保/军人, 直接回车不改): ", current->data.patient_type);
@@ -618,25 +696,28 @@ int admin_patient_menu(const User *current_user) {
             free_patient_list(head);
             printf("患者信息修改成功!\n");
             return SUCCESS;
-        case 3:
-            list_patients();
-            printf("\n请输入要删除的患者编号: ");
-            if (fgets(patient_id, sizeof(patient_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            patient_id[strcspn(patient_id, "\n")] = 0;
-
+        }
+        case 3: {
             head = load_patients_list();
+            int pc = count_patient_list(head);
+            if (pc == 0) { ui_warn("暂无患者数据。"); free_patient_list(head); return SUCCESS; }
+
+            const char **pi = malloc(pc * sizeof(const char *));
+            char (*pb)[120] = malloc(pc * sizeof(*pb));
+            int pi_idx = 0;
+            PatientNode *pcu = head;
+            while (pcu) {
+                snprintf(pb[pi_idx], 120, "%s - %s (%s)", pcu->data.patient_id, pcu->data.name, pcu->data.patient_type);
+                pi[pi_idx] = pb[pi_idx]; pi_idx++; pcu = pcu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的患者", pi, pc);
+            free((void*)pi); free(pb);
+            if (sel < 0) { free_patient_list(head); return SUCCESS; }
+
             current = head;
             prev = NULL;
-            while (current) {
-                if (strcmp(current->data.patient_id, patient_id) == 0) break;
-                prev = current;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("患者不存在!");
-                free_patient_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
 
             // Cascade check: verify no active appointment registrations
             {
@@ -644,7 +725,7 @@ int admin_patient_menu(const User *current_user) {
                 AppointmentNode *apt_head = load_appointments_list();
                 AppointmentNode *apt_cur = apt_head;
                 while (apt_cur && !has_appointment) {
-                    if (strcmp(apt_cur->data.patient_id, patient_id) == 0 &&
+                    if (strcmp(apt_cur->data.patient_id, current->data.patient_id) == 0 &&
                         strcmp(apt_cur->data.status, "已取消") != 0 &&
                         strcmp(apt_cur->data.status, "已完成") != 0 &&
                         strcmp(apt_cur->data.status, "已就诊") != 0 &&
@@ -658,7 +739,7 @@ int admin_patient_menu(const User *current_user) {
                     OnsiteRegistrationQueue oq = load_onsite_registration_queue();
                     OnsiteRegistrationNode *oc = oq.front;
                     while (oc && !has_appointment) {
-                        if (strcmp(oc->data.patient_id, patient_id) == 0 &&
+                        if (strcmp(oc->data.patient_id, current->data.patient_id) == 0 &&
                             strcmp(oc->data.status, "已退号") != 0 &&
                             strcmp(oc->data.status, "已完成") != 0) {
                             has_appointment = 1;
@@ -687,8 +768,9 @@ int admin_patient_menu(const User *current_user) {
             free(current);
             save_patients_list(head);
             free_patient_list(head);
-            printf("患者 %s 已删除!\n", patient_id);
+            printf("患者已删除!\n");
             return SUCCESS;
+        }
         default:
             return ERROR_INVALID_INPUT;
     }
@@ -817,23 +899,34 @@ int admin_drug_menu(const User *current_user) {
             free_drug_list(head);
             printf("药品 %s 创建成功!\n", drug_id);
             return SUCCESS;
-        case 3:
-            list_drugs();
-            printf("\n请输入要修改的药品编号: ");
-            if (fgets(drug_id, sizeof(drug_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            drug_id[strcspn(drug_id, "\n")] = 0;
-
+        case 3: {
             head = load_drugs_list();
+            int dc = count_drug_list(head);
+            if (dc == 0) { ui_warn("暂无药品数据。"); free_drug_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[120] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DrugNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 120, "%s - %s (库存:%d)", dcu->data.drug_id, dcu->data.name, dcu->data.stock_num);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的药品", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_drug_list(head); return SUCCESS; }
+
             current = head;
-            while (current) {
-                if (strcmp(current->data.drug_id, drug_id) == 0) break;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("药品不存在!");
-                free_drug_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) current = current->next;
+            ui_sub_header("修改药品");
+            printf("  %-10s %s\n", "编号:", current->data.drug_id);
+            printf("  %-10s %s\n", "名称:", current->data.name);
+            printf("  %-10s %.2f\n", "单价:", current->data.price);
+            printf("  %-10s %d\n", "库存:", current->data.stock_num);
+            printf("  %-10s %d\n", "预警阈值:", current->data.warning_line);
+            printf("  %-10s %.0f%%\n", "报销率:", current->data.reimbursement_ratio * 100);
+            ui_divider();
 
             printf("当前名称: %s, 输入新名称(直接回车不改): ", current->data.name);
             if (fgets(input, sizeof(input), stdin)) {
@@ -876,53 +969,64 @@ int admin_drug_menu(const User *current_user) {
             free_drug_list(head);
             printf("药品信息修改成功!\n");
             return SUCCESS;
-        case 4:
-            list_drugs();
-            printf("\n请输入要补货的药品编号: ");
-            if (fgets(drug_id, sizeof(drug_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            drug_id[strcspn(drug_id, "\n")] = 0;
+        }
+        case 4: {
+            head = load_drugs_list();
+            int dc = count_drug_list(head);
+            if (dc == 0) { ui_warn("暂无药品数据。"); free_drug_list(head); return SUCCESS; }
 
-            printf("请输入补货数量: ");
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[120] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DrugNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 120, "%s - %s (库存:%d)", dcu->data.drug_id, dcu->data.name, dcu->data.stock_num);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要补货的药品", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_drug_list(head); return SUCCESS; }
+
+            current = head;
+            for (int j = 0; j < sel; j++) current = current->next;
+
+            printf("当前库存: %d, 请输入补货数量: ", current->data.stock_num);
             if (scanf("%d", &add_stock) != 1) {
                 clear_input_buffer();
+                free_drug_list(head);
                 return ERROR_INVALID_INPUT;
             }
             clear_input_buffer();
-            if (add_stock <= 0) return ERROR_INVALID_INPUT;
+            if (add_stock <= 0) { free_drug_list(head); return ERROR_INVALID_INPUT; }
 
-            head = load_drugs_list();
-            current = head;
-            while (current) {
-                if (strcmp(current->data.drug_id, drug_id) == 0) {
-                    current->data.stock_num += add_stock;
-                    save_drugs_list(head);
-                    printf("补货成功，当前库存: %d\n", current->data.stock_num);
-                    free_drug_list(head);
-                    return SUCCESS;
-                }
-                current = current->next;
-            }
+            current->data.stock_num += add_stock;
+            save_drugs_list(head);
+            printf("补货成功，当前库存: %d\n", current->data.stock_num);
             free_drug_list(head);
-            return ERROR_NOT_FOUND;
-        case 5:
-            list_drugs();
-            printf("\n请输入要删除的药品编号: ");
-            if (fgets(drug_id, sizeof(drug_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            drug_id[strcspn(drug_id, "\n")] = 0;
-
+            return SUCCESS;
+        }
+        case 5: {
             head = load_drugs_list();
+            int dc = count_drug_list(head);
+            if (dc == 0) { ui_warn("暂无药品数据。"); free_drug_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[120] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DrugNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 120, "%s - %s (库存:%d)", dcu->data.drug_id, dcu->data.name, dcu->data.stock_num);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的药品", di, dc);
+            free((void*)di); free(db);
+            if (sel < 0) { free_drug_list(head); return SUCCESS; }
+
             current = head;
             prev = NULL;
-            while (current) {
-                if (strcmp(current->data.drug_id, drug_id) == 0) break;
-                prev = current;
-                current = current->next;
-            }
-            if (!current) {
-                ui_err("药品不存在!");
-                free_drug_list(head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
 
             if (!ui_confirm("确认删除该药品?")) {
                 free_drug_list(head);
@@ -937,8 +1041,9 @@ int admin_drug_menu(const User *current_user) {
             free(current);
             save_drugs_list(head);
             free_drug_list(head);
-            printf("药品 %s 已删除!\n", drug_id);
+            printf("药品已删除!\n");
             return SUCCESS;
+        }
         case 6:
             check_drug_warning();
             return SUCCESS;
@@ -1054,23 +1159,33 @@ int admin_ward_menu(const User *current_user) {
             free_ward_list(ward_head);
             printf("病房 %s 创建成功!\n", ward_id);
             return SUCCESS;
-        case 3:
-            list_wards();
-            printf("\n请输入要修改的病房编号: ");
-            if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            ward_id[strcspn(ward_id, "\n")] = 0;
-
+        case 3: {
             ward_head = load_wards_list();
+            int wc = count_ward_list(ward_head);
+            if (wc == 0) { ui_warn("暂无病房数据。"); free_ward_list(ward_head); return SUCCESS; }
+
+            const char **wi = malloc(wc * sizeof(const char *));
+            char (*wb)[100] = malloc(wc * sizeof(*wb));
+            int wi_idx = 0;
+            WardNode *wcu = ward_head;
+            while (wcu) {
+                snprintf(wb[wi_idx], 100, "%s - %s (%d床)", wcu->data.ward_id, wcu->data.type, wcu->data.total_beds);
+                wi[wi_idx] = wb[wi_idx]; wi_idx++; wcu = wcu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的病房", wi, wc);
+            free((void*)wi); free(wb);
+            if (sel < 0) { free_ward_list(ward_head); return SUCCESS; }
+
             current_ward = ward_head;
-            while (current_ward) {
-                if (strcmp(current_ward->data.ward_id, ward_id) == 0) break;
-                current_ward = current_ward->next;
-            }
-            if (!current_ward) {
-                ui_err("病房不存在!");
-                free_ward_list(ward_head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) current_ward = current_ward->next;
+            ui_sub_header("修改病房");
+            printf("  %-10s %s\n", "编号:", current_ward->data.ward_id);
+            printf("  %-10s %s\n", "类型:", current_ward->data.type);
+            printf("  %-10s %d\n", "总床位:", current_ward->data.total_beds);
+            printf("  %-10s %d\n", "剩余床位:", current_ward->data.remain_beds);
+            printf("  %-10s %d\n", "预警阈值:", current_ward->data.warning_line);
+            ui_divider();
 
             printf("当前类型: %s, 输入新类型(直接回车不改): ", current_ward->data.type);
             if (fgets(input, sizeof(input), stdin)) {
@@ -1102,25 +1217,28 @@ int admin_ward_menu(const User *current_user) {
             free_ward_list(ward_head);
             printf("病房信息修改成功!\n");
             return SUCCESS;
-        case 4:
-            list_wards();
-            printf("\n请输入要删除的病房编号: ");
-            if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            ward_id[strcspn(ward_id, "\n")] = 0;
-
+        }
+        case 4: {
             ward_head = load_wards_list();
+            int wc = count_ward_list(ward_head);
+            if (wc == 0) { ui_warn("暂无病房数据。"); free_ward_list(ward_head); return SUCCESS; }
+
+            const char **wi = malloc(wc * sizeof(const char *));
+            char (*wb)[100] = malloc(wc * sizeof(*wb));
+            int wi_idx = 0;
+            WardNode *wcu = ward_head;
+            while (wcu) {
+                snprintf(wb[wi_idx], 100, "%s - %s (%d床)", wcu->data.ward_id, wcu->data.type, wcu->data.total_beds);
+                wi[wi_idx] = wb[wi_idx]; wi_idx++; wcu = wcu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的病房", wi, wc);
+            free((void*)wi); free(wb);
+            if (sel < 0) { free_ward_list(ward_head); return SUCCESS; }
+
             current_ward = ward_head;
             prev = NULL;
-            while (current_ward) {
-                if (strcmp(current_ward->data.ward_id, ward_id) == 0) break;
-                prev = current_ward;
-                current_ward = current_ward->next;
-            }
-            if (!current_ward) {
-                ui_err("病房不存在!");
-                free_ward_list(ward_head);
-                return ERROR_NOT_FOUND;
-            }
+            for (int j = 0; j < sel; j++) { prev = current_ward; current_ward = current_ward->next; }
 
             if (!ui_confirm("确认删除该病房?")) {
                 free_ward_list(ward_head);
@@ -1135,57 +1253,98 @@ int admin_ward_menu(const User *current_user) {
             free(current_ward);
             save_wards_list(ward_head);
             free_ward_list(ward_head);
-            printf("病房 %s 已删除!\n", ward_id);
+            printf("病房已删除!\n");
             return SUCCESS;
-        case 5:
-            list_wards();
-            printf("\n请输入病房编号: ");
-            if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) return ERROR_INVALID_INPUT;
-            ward_id[strcspn(ward_id, "\n")] = 0;
-            printf("请输入新的剩余床位数: ");
+        }
+        case 5: {
+            ward_head = load_wards_list();
+            int wc = count_ward_list(ward_head);
+            if (wc == 0) { ui_warn("暂无病房数据。"); free_ward_list(ward_head); return SUCCESS; }
+
+            const char **wi = malloc(wc * sizeof(const char *));
+            char (*wb)[100] = malloc(wc * sizeof(*wb));
+            int wi_idx = 0;
+            WardNode *wcu = ward_head;
+            while (wcu) {
+                snprintf(wb[wi_idx], 100, "%s - %s (%d/%d床)", wcu->data.ward_id, wcu->data.type,
+                         wcu->data.remain_beds, wcu->data.total_beds);
+                wi[wi_idx] = wb[wi_idx]; wi_idx++; wcu = wcu->next;
+            }
+
+            int sel = ui_search_list("选择要调整床位的病房", wi, wc);
+            free((void*)wi); free(wb);
+            if (sel < 0) { free_ward_list(ward_head); return SUCCESS; }
+
+            current_ward = ward_head;
+            for (int j = 0; j < sel; j++) current_ward = current_ward->next;
+
+            printf("当前剩余床位: %d/%d, 请输入新的剩余床位数: ", current_ward->data.remain_beds, current_ward->data.total_beds);
             if (scanf("%d", &remain_beds) != 1) {
                 clear_input_buffer();
+                free_ward_list(ward_head);
                 return ERROR_INVALID_INPUT;
             }
             clear_input_buffer();
 
-            ward_head = load_wards_list();
-            current_ward = ward_head;
-            while (current_ward) {
-                if (strcmp(current_ward->data.ward_id, ward_id) == 0) {
-                    if (remain_beds < 0 || remain_beds > current_ward->data.total_beds) {
-                        free_ward_list(ward_head);
-                        return ERROR_INVALID_INPUT;
-                    }
-                    current_ward->data.remain_beds = remain_beds;
-                    save_wards_list(ward_head);
-                    printf("病房床位更新成功。\n");
-                    free_ward_list(ward_head);
-                    return SUCCESS;
-                }
-                current_ward = current_ward->next;
+            if (remain_beds < 0 || remain_beds > current_ward->data.total_beds) {
+                ui_err("剩余床位超出范围!");
+                free_ward_list(ward_head);
+                return ERROR_INVALID_INPUT;
             }
+            current_ward->data.remain_beds = remain_beds;
+            save_wards_list(ward_head);
+            printf("病房床位更新成功。\n");
             free_ward_list(ward_head);
-            return ERROR_NOT_FOUND;
+            return SUCCESS;
+        }
         case 6: {
             WardCallNode *call_head = load_ward_calls_list();
             WardCallNode *tail = call_head;
             WardCall call;
 
-            list_wards();
-            printf("\n请输入病房编号: ");
-            if (fgets(ward_id, sizeof(ward_id), stdin) == NULL) {
-                free_ward_call_list(call_head);
-                return ERROR_INVALID_INPUT;
-            }
-            ward_id[strcspn(ward_id, "\n")] = 0;
+            ward_head = load_wards_list();
+            int wc = count_ward_list(ward_head);
+            if (wc == 0) { ui_warn("暂无病房数据。"); free_ward_list(ward_head); free_ward_call_list(call_head); return SUCCESS; }
 
-            printf("请输入患者编号: ");
-            if (fgets(patient_id, sizeof(patient_id), stdin) == NULL) {
-                free_ward_call_list(call_head);
-                return ERROR_INVALID_INPUT;
+            const char **wi = malloc(wc * sizeof(const char *));
+            char (*wb)[100] = malloc(wc * sizeof(*wb));
+            int wi_idx = 0;
+            WardNode *wcu = ward_head;
+            while (wcu) {
+                snprintf(wb[wi_idx], 100, "%s - %s (%d/%d床)", wcu->data.ward_id, wcu->data.type,
+                         wcu->data.remain_beds, wcu->data.total_beds);
+                wi[wi_idx] = wb[wi_idx]; wi_idx++; wcu = wcu->next;
             }
-            patient_id[strcspn(patient_id, "\n")] = 0;
+
+            int sel = ui_search_list("选择病房", wi, wc);
+            free((void*)wi); free(wb);
+            if (sel < 0) { free_ward_list(ward_head); free_ward_call_list(call_head); return SUCCESS; }
+
+            current_ward = ward_head;
+            for (int j = 0; j < sel; j++) current_ward = current_ward->next;
+            strcpy(ward_id, current_ward->data.ward_id);
+            free_ward_list(ward_head);
+
+            {
+                PatientNode *ph = load_patients_list();
+                int pc = count_patient_list(ph);
+                if (pc == 0) { ui_warn("暂无患者。"); free_patient_list(ph); free_ward_call_list(call_head); return SUCCESS; }
+                const char **pi = malloc(pc * sizeof(const char *));
+                char (*pb)[90] = malloc(pc * sizeof(*pb));
+                int idx = 0;
+                PatientNode *pu = ph;
+                while (pu) {
+                    snprintf(pb[idx], 90, "%s - %s (%s)", pu->data.patient_id, pu->data.name, pu->data.patient_type);
+                    pi[idx] = pb[idx]; idx++; pu = pu->next;
+                }
+                int sel = ui_search_list("选择患者", pi, pc);
+                free((void*)pi); free(pb);
+                if (sel < 0) { free_patient_list(ph); free_ward_call_list(call_head); return SUCCESS; }
+                pu = ph;
+                for (int j = 0; j < sel; j++) pu = pu->next;
+                strcpy(patient_id, pu->data.patient_id);
+                free_patient_list(ph);
+            }
 
             patient = find_patient_by_id(patient_id);
             if (!patient) {
@@ -1253,47 +1412,4 @@ int admin_ward_menu(const User *current_user) {
     }
 }
 
-int admin_report_menu(const User *current_user) {
-    AppointmentNode *appointment_head = load_appointments_list();
-    MedicalRecordNode *record_head = load_medical_records_list();
-    PrescriptionNode *prescription_head = load_prescriptions_list();
-    WardCallNode *call_head = load_ward_calls_list();
-    OnsiteRegistrationQueue onsite_queue = load_onsite_registration_queue();
-    float total_prescription_amount = 0.0f;
-    float total_reimbursement = 0.0f;
-    PrescriptionNode *current_prescription = prescription_head;
-
-    (void)current_user;
-
-    while (current_prescription) {
-        total_prescription_amount += current_prescription->data.total_price;
-        Drug *drug = find_drug_by_id(current_prescription->data.drug_id);
-        if (drug) {
-            Patient *patient = find_patient_by_id(current_prescription->data.patient_id);
-            if (patient) {
-                float reimb = calculate_drug_reimbursement(drug, current_prescription->data.quantity, patient->patient_type);
-                total_reimbursement += reimb;
-                free(patient);
-            }
-            free(drug);
-        }
-        current_prescription = current_prescription->next;
-    }
-
-    ui_header("报表管理");
-    printf("预约挂号总量: %d\n", count_appointment_list(appointment_head));
-    printf("现场挂号排队人数: %d\n", onsite_queue.size);
-    printf("诊疗记录数: %d\n", count_medical_record_list(record_head));
-    printf("处方记录数: %d\n", count_prescription_list(prescription_head));
-    printf("病房呼叫数: %d\n", count_ward_call_list(call_head));
-    printf("处方总金额: %.2f\n", total_prescription_amount);
-    printf("报销总金额: %.2f\n", total_reimbursement);
-    printf("实际收入: %.2f\n", total_prescription_amount - total_reimbursement);
-
-    free_appointment_list(appointment_head);
-    free_medical_record_list(record_head);
-    free_prescription_list(prescription_head);
-    free_ward_call_list(call_head);
-    free_onsite_registration_queue(&onsite_queue);
-    return SUCCESS;
-}
+// Replaced by admin_analysis_menu() in analysis.c

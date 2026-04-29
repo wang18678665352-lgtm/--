@@ -71,11 +71,18 @@ int get_menu_choice(int min, int max) {
         if (current > max) current = max;
     }
 
-    printf("\n请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
-    printf("\033[7m %d \033[0m", current);
+    if (item_count > 0) {
+        printf("\n请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
+        printf(C_BOLD C_CYAN "\xe2\x86\x92 " C_RESET);
+        printf(C_BOLD C_WHITE "\033[7m %s \033[0m" C_RESET, item_texts[current_index]);
+    } else {
+        printf("\n请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
+        printf("\033[7m %d \033[0m", current);
+    }
     fflush(stdout);
 
-    int prev = current;
+    int prev_index = current_index;
+    int prev_current = current;
 
     while (1) {
         int ch = _getch();
@@ -149,14 +156,56 @@ int get_menu_choice(int min, int max) {
             continue;
         }
 
-        if (current == prev) continue;
+        if (item_count > 0) {
+            if (current_index == prev_index) continue;
 
-        // Update prompt selection number only (skip menu item redraw,
-        // since non-menu lines between items make cursor positioning unreliable)
+            // In-place highlighting using DECSC/DECRC cursor save/restore.
+            // Save cursor at prompt, move to items to redraw, restore back.
+            {
+                int total = ui_menu_get_saved_total();
+                int old_idx = prev_index;
+                int new_idx = current_index;
+                int old_off = ui_menu_get_item_offset(old_idx);
+                int new_off = ui_menu_get_item_offset(new_idx);
+
+                // Save cursor position (at prompt)
+                printf("\0337");
+
+                // Un-highlight old item: move up from prompt to old item line
+                printf("\033[%dA", total - old_off + 1);
+                printf("\r\033[K");
+                if (item_exit[old_idx]) {
+                    printf("  " C_DIM "%d. %s" C_RESET "\n", item_nums[old_idx], item_texts[old_idx]);
+                } else {
+                    printf("  " C_BOLD C_YELLOW "%d." C_RESET " %s\n", item_nums[old_idx], item_texts[old_idx]);
+                }
+
+                // Restore cursor to prompt
+                printf("\0338");
+
+                // Highlight new item: move up from prompt to new item line
+                printf("\033[%dA", total - new_off + 1);
+                printf("\r\033[K");
+                printf("  " BG_CYAN C_WHITE C_BOLD "%d. %s" C_RESET "\n", item_nums[new_idx], item_texts[new_idx]);
+
+                // Restore cursor to prompt
+                printf("\0338");
+            }
+
+            prev_index = current_index;
+        } else {
+            if (current == prev_current) continue;
+            prev_current = current;
+        }
+
         printf("\r\033[K请选择 (\xe2\x86\x91\xe2\x86\x93 切换, 回车确认): ");
-        printf("\033[7m %d \033[0m", current);
+        if (item_count > 0) {
+            printf(C_BOLD C_CYAN "\xe2\x86\x92 " C_RESET);
+            printf(C_BOLD C_WHITE "\033[7m %s \033[0m" C_RESET, item_texts[current_index]);
+        } else {
+            printf("\033[7m %d \033[0m", current);
+        }
         fflush(stdout);
-        prev = current;
     }
 }
 

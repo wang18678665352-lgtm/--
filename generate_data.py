@@ -10,7 +10,7 @@ import os
 import hashlib
 import string
 
-DATA_DIR = r"C:\Users\王成烨\Documents\xwechat_files\wxid_mk47esqqdpw522_bfcb\msg\file\2026-04\src\data"
+DATA_DIR = r"I:\practise\c++\src\data"
 os.makedirs(DATA_DIR, exist_ok=True)
 random.seed(20260426)
 

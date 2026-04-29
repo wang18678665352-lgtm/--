@@ -3,6 +3,7 @@
 #include "patient.h"
 #include "doctor.h"
 #include "admin.h"
+#include "analysis.h"
 #include "public.h"
 #include "sha256.h"
 #include "data_storage.h"
@@ -154,9 +155,11 @@ void show_main_menu(void) {
     printf("\n");
     ui_box_top("主 菜 单");
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+    ui_menu_track_line();
     ui_menu_item(1, "登录系统");
     ui_menu_item(2, "注册用户");
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+    ui_menu_track_line();
     ui_menu_exit(0, "退出程序");
     ui_box_bottom();
 }
@@ -168,8 +171,10 @@ void run_patient_menu(const User *user) {
         ui_box_top("患 者 系 统");
         ui_user_badge(user->username, user->role);
         ui_divider();
+        show_warning_banner();
         patient_main_menu(user);
         printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+        ui_menu_track_line();
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
@@ -197,8 +202,10 @@ void run_doctor_menu(const User *user) {
         ui_box_top("医 生 系 统");
         ui_user_badge(user->username, user->role);
         ui_divider();
+        show_warning_banner();
         doctor_main_menu(user);
         printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+        ui_menu_track_line();
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
@@ -227,8 +234,10 @@ void run_admin_menu(const User *user) {
         ui_box_top("管 理 员 系 统");
         ui_user_badge(user->username, user->role);
         ui_divider();
+        show_warning_banner();
         admin_main_menu(user);
         printf(C_BOLD C_CYAN "  ║" C_RESET "                                                    " C_BOLD C_CYAN "║\n" C_RESET);
+        ui_menu_track_line();
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
@@ -243,7 +252,7 @@ void run_admin_menu(const User *user) {
             case 3: admin_patient_menu(user); break;
             case 4: admin_drug_menu(user); break;
             case 5: admin_ward_menu(user); break;
-            case 6: admin_report_menu(user); break;
+            case 6: admin_analysis_menu(user); break;
         }
         pause_screen();
     }
