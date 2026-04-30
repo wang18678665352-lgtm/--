@@ -51,4 +51,7 @@ int get_menu_choice(int min, int max);
 void get_current_time(char *buffer, int buffer_size);
 void generate_id(char *buffer, int buffer_size, const char *prefix);
 
+// Read a line from stdin and convert to UTF-8 (cross-platform safe for search)
+char* read_input_line(char *buf, size_t size);
+
 #endif // COMMON_H

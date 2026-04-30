@@ -35,7 +35,7 @@ int main(void) {
         printf("数据存储初始化失败!\n");
         return 1;
     }
-    
+
     // Create default admin user if not exists
     UserNode *head = load_users_list();
     

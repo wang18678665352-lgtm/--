@@ -116,8 +116,7 @@ int smart_id_lookup(const char *prompt, const char *id_list[], int count, char *
     if (count <= 0) {
         char input[64];
         printf(S_LABEL "  %s: " C_RESET, prompt);
-        if (fgets(input, sizeof(input), stdin) == NULL) return -1;
-        input[strcspn(input, "\n")] = 0;
+        if (read_input_line(input, sizeof(input)) == NULL) return -1;
         if (input[0] == 0) return -1;
         strncpy(output, input, out_size - 1);
         output[out_size - 1] = 0;
@@ -214,8 +213,7 @@ int quick_template_input(const char *category, const char *prompt, char *output,
 
     if (tcount == 0) {
         printf(S_LABEL "  %s" C_RESET " (直接输入): ", prompt);
-        if (fgets(output, out_size, stdin) == NULL) return -1;
-        output[strcspn(output, "\n")] = 0;
+        if (read_input_line(output, out_size) == NULL) return -1;
         if (output[0] == 0) return -1;
         return 1;
     }
@@ -223,8 +221,7 @@ int quick_template_input(const char *category, const char *prompt, char *output,
     printf("\n" S_LABEL "  %s" C_RESET "\n", prompt);
     printf(C_DIM "  [直接输入] / [#n=模板] / [v=查看全部模板]" C_RESET "\n");
 
-    if (fgets(output, out_size, stdin) == NULL) return -1;
-    output[strcspn(output, "\n")] = 0;
+    if (read_input_line(output, out_size) == NULL) return -1;
 
     if (output[0] == 0) return -1;
 
@@ -236,8 +233,7 @@ int quick_template_input(const char *category, const char *prompt, char *output,
             printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", i + 1, tlist[i]);
         }
         printf(S_LABEL "  请输入内容或选序号: " C_RESET);
-        if (fgets(output, out_size, stdin) == NULL) return -1;
-        output[strcspn(output, "\n")] = 0;
+        if (read_input_line(output, out_size) == NULL) return -1;
         if (output[0] == 0) return -1;
     }
 
@@ -521,8 +517,7 @@ void ui_paginate(const char **items, int count, int page_size, const char *title
             if (c == 's' || c == 'S') {
                 char keyword[64];
                 printf(S_LABEL "  输入关键字: " C_RESET);
-                if (fgets(keyword, sizeof(keyword), stdin) == NULL) continue;
-                keyword[strcspn(keyword, "\n")] = 0;
+                if (read_input_line(keyword, sizeof(keyword)) == NULL) continue;
                 if (keyword[0] == '\0') continue;
 
                 int match_idx[count];
@@ -573,8 +568,7 @@ int ui_search_list(const char *prompt, const char **items, int count) {
     while (1) {
         printf(S_LABEL "  %s" C_RESET " (" C_DIM "输入关键字搜索, 序号直接选, q取消" C_RESET "): ",
                prompt ? prompt : "搜索");
-        if (fgets(input, sizeof(input), stdin) == NULL) return -1;
-        input[strcspn(input, "\n")] = 0;
+        if (read_input_line(input, sizeof(input)) == NULL) return -1;
 
         if (strcmp(input, "q") == 0 || strcmp(input, "Q") == 0) return -1;
         if (input[0] == '\0') continue;

@@ -10,9 +10,32 @@
 #include <unistd.h>
 #endif
 
+char* read_input_line(char *buf, size_t size) {
+    if (!buf || size == 0) return NULL;
+    if (fgets(buf, (int)size, stdin) == NULL) return NULL;
+    buf[strcspn(buf, "\n")] = '\0';
+
+#ifdef _WIN32
+    UINT acp = GetACP();
+    if (acp != CP_UTF8) {
+        int wlen = MultiByteToWideChar(acp, 0, buf, -1, NULL, 0);
+        if (wlen > 0) {
+            wchar_t *wide = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+            if (wide) {
+                MultiByteToWideChar(acp, 0, buf, -1, wide, wlen);
+                int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+                if (utf8_len > 0 && (size_t)utf8_len <= size)
+                    WideCharToMultiByte(CP_UTF8, 0, wide, -1, buf, utf8_len, NULL, NULL);
+                free(wide);
+            }
+        }
+    }
+#endif
+    return buf;
+}
+
 void init_console_encoding(void) {
 #ifdef _WIN32
-    SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
     setlocale(LC_ALL, ".UTF-8");
 #endif
