@@ -1,9 +1,11 @@
 #include "data_storage.h"
 #include <sys/stat.h>
 #include <errno.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -313,7 +315,7 @@ void init_onsite_registration_queue(OnsiteRegistrationQueue *queue) {
     queue->size = 0;
 }
 
-int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegistration *registration) {
+int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegistration *registration, bool front) {
     OnsiteRegistrationNode *node;
 
     if (!queue || !registration) {
@@ -325,12 +327,20 @@ int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegi
         return ERROR_FILE_IO;
     }
 
-    if (!queue->rear) {
+    if (front) {
+        // Insert at front (for emergency patients)
+        node->next = queue->front;
         queue->front = node;
-        queue->rear = node;
+        if (!queue->rear) queue->rear = node;
     } else {
-        queue->rear->next = node;
-        queue->rear = node;
+        // Normal: insert at rear
+        if (!queue->rear) {
+            queue->front = node;
+            queue->rear = node;
+        } else {
+            queue->rear->next = node;
+            queue->rear = node;
+        }
     }
 
     queue->size++;
@@ -730,6 +740,8 @@ DrugNode* load_drugs_list(void) {
         drug.warning_line = parse_int_token(&cursor);
         drug.is_special = parse_bool_token(&cursor);
         drug.reimbursement_ratio = parse_float_token(&cursor);
+        strncpy(drug.category, next_token(&cursor), sizeof(drug.category) - 1);
+        if (drug.category[0] == '\0') strcpy(drug.category, "西药");
 
         DrugNode *node = create_drug_node(&drug);
         if (!node) {
@@ -757,17 +769,18 @@ int save_drugs_list(DrugNode *head) {
         return ERROR_FILE_IO;
     }
 
-    fprintf(fp, "# drug_id\tname\tprice\tstock_num\twarning_line\tis_special\treimbursement_ratio\n");
+    fprintf(fp, "# drug_id\tname\tprice\tstock_num\twarning_line\tis_special\treimbursement_ratio\tcategory\n");
     DrugNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%.2f\t%d\t%d\t%d\t%.2f\n",
+        fprintf(fp, "%s\t%s\t%.2f\t%d\t%d\t%d\t%.2f\t%s\n",
                 current->data.drug_id,
                 current->data.name,
                 current->data.price,
                 current->data.stock_num,
                 current->data.warning_line,
                 current->data.is_special ? 1 : 0,
-                current->data.reimbursement_ratio);
+                current->data.reimbursement_ratio,
+                current->data.category);
         current = current->next;
     }
 
@@ -927,7 +940,7 @@ OnsiteRegistrationQueue load_onsite_registration_queue(void) {
         strncpy(registration.status, next_token(&cursor), sizeof(registration.status) - 1);
         strncpy(registration.create_time, next_token(&cursor), sizeof(registration.create_time) - 1);
 
-        if (enqueue_onsite_registration(&queue, &registration) != SUCCESS) {
+        if (enqueue_onsite_registration(&queue, &registration, false) != SUCCESS) {
             free_onsite_registration_queue(&queue);
             break;
         }
@@ -1046,6 +1059,121 @@ int save_ward_calls_list(WardCallNode *head) {
 
     fclose(fp);
     return SUCCESS;
+}
+
+// ==================== 排班操作函数 ====================
+
+ScheduleNode* create_schedule_node(const Schedule *schedule) {
+    ScheduleNode *node = (ScheduleNode *)malloc(sizeof(ScheduleNode));
+    if (node) {
+        node->data = *schedule;
+        node->next = NULL;
+    }
+    return node;
+}
+
+void free_schedule_list(ScheduleNode *head) {
+    ScheduleNode *current = head;
+    while (current) {
+        ScheduleNode *next = current->next;
+        free(current);
+        current = next;
+    }
+}
+
+int count_schedule_list(ScheduleNode *head) {
+    int count = 0;
+    ScheduleNode *current = head;
+    while (current) {
+        count++;
+        current = current->next;
+    }
+    return count;
+}
+
+ScheduleNode* load_schedules_list(void) {
+    FILE *fp = fopen(SCHEDULES_FILE, "r");
+    if (!fp) {
+        return NULL;
+    }
+
+    ScheduleNode *head = NULL;
+    ScheduleNode *tail = NULL;
+    char line[TEXT_LINE_SIZE];
+
+    while (read_data_line(fp, line, sizeof(line))) {
+        char *cursor = line;
+        Schedule schedule;
+        memset(&schedule, 0, sizeof(schedule));
+        strncpy(schedule.schedule_id, next_token(&cursor), sizeof(schedule.schedule_id) - 1);
+        strncpy(schedule.doctor_id, next_token(&cursor), sizeof(schedule.doctor_id) - 1);
+        strncpy(schedule.work_date, next_token(&cursor), sizeof(schedule.work_date) - 1);
+        strncpy(schedule.time_slot, next_token(&cursor), sizeof(schedule.time_slot) - 1);
+        schedule.max_appt = parse_int_token(&cursor);
+        schedule.max_onsite = parse_int_token(&cursor);
+        strncpy(schedule.status, next_token(&cursor), sizeof(schedule.status) - 1);
+
+        ScheduleNode *node = create_schedule_node(&schedule);
+        if (!node) {
+            free_schedule_list(head);
+            fclose(fp);
+            return NULL;
+        }
+
+        if (!head) {
+            head = node;
+            tail = node;
+        } else {
+            tail->next = node;
+            tail = node;
+        }
+    }
+
+    fclose(fp);
+    return head;
+}
+
+int save_schedules_list(ScheduleNode *head) {
+    FILE *fp = fopen(SCHEDULES_FILE, "w");
+    if (!fp) {
+        return ERROR_FILE_IO;
+    }
+
+    fprintf(fp, "# schedule_id\tdoctor_id\twork_date\ttime_slot\tmax_appt\tmax_onsite\tstatus\n");
+    ScheduleNode *current = head;
+    while (current) {
+        fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+                current->data.schedule_id,
+                current->data.doctor_id,
+                current->data.work_date,
+                current->data.time_slot,
+                current->data.max_appt,
+                current->data.max_onsite,
+                current->data.status);
+        current = current->next;
+    }
+
+    fclose(fp);
+    return SUCCESS;
+}
+
+int has_doctor_schedule(const char *doctor_id, const char *date) {
+    ScheduleNode *head = load_schedules_list();
+    if (!head) return 0;
+
+    ScheduleNode *current = head;
+    while (current) {
+        if (strcmp(current->data.doctor_id, doctor_id) == 0 &&
+            strcmp(current->data.work_date, date) == 0 &&
+            strcmp(current->data.status, "正常") == 0) {
+            free_schedule_list(head);
+            return 1;
+        }
+        current = current->next;
+    }
+
+    free_schedule_list(head);
+    return 0;
 }
 
 MedicalRecordNode* load_medical_records_list(void) {
@@ -1834,3 +1962,191 @@ int ensure_default_templates(void) {
     free_template_list(head);
     return result;
 }
+
+// ======================= 操作日志 =======================
+
+LogEntryNode* create_log_entry_node(const LogEntry *entry) {
+    LogEntryNode *node = malloc(sizeof(LogEntryNode));
+    if (!node) return NULL;
+    node->data = *entry;
+    node->next = NULL;
+    return node;
+}
+
+void free_log_entry_list(LogEntryNode *head) {
+    while (head) {
+        LogEntryNode *next = head->next;
+        free(head);
+        head = next;
+    }
+}
+
+int count_log_entry_list(LogEntryNode *head) {
+    int count = 0;
+    while (head) { count++; head = head->next; }
+    return count;
+}
+
+LogEntryNode* load_logs_list(void) {
+    FILE *fp = fopen(LOGS_FILE, "r");
+    if (!fp) return NULL;
+
+    LogEntryNode *head = NULL, *tail = NULL;
+    char line[TEXT_LINE_SIZE];
+    while (read_data_line(fp, line, sizeof(line))) {
+        char *cursor = line;
+        LogEntry entry;
+        memset(&entry, 0, sizeof(entry));
+        strncpy(entry.log_id, next_token(&cursor), MAX_ID - 1);
+        strncpy(entry.operator_name, next_token(&cursor), MAX_USERNAME - 1);
+        strncpy(entry.action, next_token(&cursor), sizeof(entry.action) - 1);
+        strncpy(entry.target, next_token(&cursor), sizeof(entry.target) - 1);
+        strncpy(entry.target_id, next_token(&cursor), MAX_ID - 1);
+        strncpy(entry.detail, next_token(&cursor), sizeof(entry.detail) - 1);
+        strncpy(entry.create_time, next_token(&cursor), sizeof(entry.create_time) - 1);
+
+        LogEntryNode *node = create_log_entry_node(&entry);
+        if (!node) { free_log_entry_list(head); fclose(fp); return NULL; }
+        if (!tail) { head = node; tail = node; }
+        else { tail->next = node; tail = node; }
+    }
+
+    fclose(fp);
+    return head;
+}
+
+int append_log(const char *operator_name, const char *action, const char *target,
+               const char *target_id, const char *detail) {
+    FILE *fp = fopen(LOGS_FILE, "a");
+    if (!fp) return ERROR_FILE_IO;
+
+    // If first time, write header
+    fseek(fp, 0, SEEK_END);
+    if (ftell(fp) == 0) {
+        fprintf(fp, "# log_id\toperator\taction\ttarget\ttarget_id\tdetail\tcreate_time\n");
+    }
+
+    char log_id[MAX_ID];
+    generate_id(log_id, MAX_ID, "L");
+    char create_time[30];
+    get_current_time(create_time, sizeof(create_time));
+
+    fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+            log_id, operator_name, action, target, target_id, detail, create_time);
+    fclose(fp);
+    return SUCCESS;
+}
+
+// ======================= 数据备份与恢复 =======================
+
+static const char *backup_data_files[] = {
+    "users.txt", "patients.txt", "doctors.txt", "departments.txt",
+    "drugs.txt", "wards.txt", "appointments.txt", "onsite_registrations.txt",
+    "ward_calls.txt", "medical_records.txt", "prescriptions.txt",
+    "templates.txt", "schedules.txt", "logs.txt"
+};
+static const int backup_file_count = sizeof(backup_data_files) / sizeof(backup_data_files[0]);
+
+static int copy_file(const char *src, const char *dst) {
+    FILE *fs = fopen(src, "rb");
+    if (!fs) return ERROR_FILE_IO;
+    FILE *fd = fopen(dst, "wb");
+    if (!fd) { fclose(fs); return ERROR_FILE_IO; }
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fs)) > 0) {
+        if (fwrite(buf, 1, n, fd) != n) { fclose(fs); fclose(fd); return ERROR_FILE_IO; }
+    }
+    fclose(fs);
+    fclose(fd);
+    return SUCCESS;
+}
+
+int backup_data(void) {
+    // Create backup directory
+#ifdef _WIN32
+    _mkdir(DATA_DIR "/backup");
+#else
+    mkdir(DATA_DIR "/backup", 0755);
+#endif
+
+    char dir_name[64];
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    strftime(dir_name, sizeof(dir_name), DATA_DIR "/backup/%Y%m%d_%H%M%S", tm);
+
+#ifdef _WIN32
+    if (_mkdir(dir_name) != 0) return ERROR_FILE_IO;
+#else
+    if (mkdir(dir_name, 0755) != 0) return ERROR_FILE_IO;
+#endif
+
+    int success_count = 0;
+    for (int i = 0; i < backup_file_count; i++) {
+        char src[256], dst[256];
+        snprintf(src, sizeof(src), DATA_DIR "/%s", backup_data_files[i]);
+        snprintf(dst, sizeof(dst), "%s/%s", dir_name, backup_data_files[i]);
+        if (copy_file(src, dst) == SUCCESS) success_count++;
+    }
+
+    printf("备份完成: %s (%d/%d 文件)\n", dir_name, success_count, backup_file_count);
+    return SUCCESS;
+}
+
+int list_backups(const char ***out_names, int *out_count) {
+    *out_names = NULL;
+    *out_count = 0;
+
+#ifdef _WIN32
+    struct _finddata_t fd;
+    intptr_t handle = _findfirst(DATA_DIR "/backup/*", &fd);
+    if (handle == -1L) return SUCCESS;
+
+    int capacity = 0, count = 0;
+    char **names = NULL;
+    do {
+        if (fd.attrib & _A_SUBDIR) {
+            if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
+            if (count >= capacity) {
+                capacity = capacity ? capacity * 2 : 16;
+                char **tmp = realloc(names, capacity * sizeof(char *));
+                if (!tmp) { free_backups_list((const char **)names, count); _findclose(handle); return ERROR_FILE_IO; }
+                names = tmp;
+            }
+            names[count] = malloc(strlen(fd.name) + 1);
+            if (!names[count]) { free_backups_list((const char **)names, count); _findclose(handle); return ERROR_FILE_IO; }
+            strcpy(names[count], fd.name);
+            count++;
+        }
+    } while (_findnext(handle, &fd) == 0);
+    _findclose(handle);
+
+    *out_names = (const char **)names;
+    *out_count = count;
+#endif
+    return SUCCESS;
+}
+
+void free_backups_list(const char **names, int count) {
+    if (!names) return;
+    for (int i = 0; i < count; i++) {
+        free((void *)names[i]);
+    }
+    free(names);
+}
+
+int restore_data(const char *backup_dir) {
+    char full_path[256];
+    int success_count = 0;
+
+    for (int i = 0; i < backup_file_count; i++) {
+        char src[256], dst[256];
+        snprintf(src, sizeof(src), DATA_DIR "/backup/%s/%s", backup_dir, backup_data_files[i]);
+        snprintf(dst, sizeof(dst), DATA_DIR "/%s", backup_data_files[i]);
+        if (copy_file(src, dst) == SUCCESS) success_count++;
+    }
+
+    printf("还原完成: %s (%d/%d 文件)\n", backup_dir, success_count, backup_file_count);
+    return SUCCESS;
+}
+

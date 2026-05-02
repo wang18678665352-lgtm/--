@@ -26,6 +26,8 @@ typedef struct {
     char title[50];
     int appt_count;
     int record_count;
+    int prescription_count;
+    float prescription_total;
     int busy_level;
 } DoctorLoad;
 
@@ -503,16 +505,34 @@ static void analysis_doctor_load(const char *month_filter) {
         mr = mr->next;
     }
 
+    // Count prescriptions per doctor
+    PrescriptionNode *pre_head = load_prescriptions_list();
+    PrescriptionNode *pr = pre_head;
+    while (pr) {
+        if (mlen == 0 || str_starts_with(pr->data.prescription_date, month_filter)) {
+            for (int i = 0; i < doc_count; i++) {
+                if (strcmp(loads[i].doctor_id, pr->data.doctor_id) == 0) {
+                    loads[i].prescription_count++;
+                    loads[i].prescription_total += pr->data.total_price;
+                    break;
+                }
+            }
+        }
+        pr = pr->next;
+    }
+    free_prescription_list(pre_head);
+
     qsort(loads, doc_count, sizeof(DoctorLoad), compare_doctor_load_desc);
 
-    printf("\n  %-12s %-16s %-8s %-8s %-8s %s\n", "医生", "科室", "预约量", "病历数", "繁忙度", "状态");
+    printf("\n  %-12s %-16s %6s %6s %6s %8s %s\n", "医生", "科室", "预约", "病历", "处方", "金额", "状态");
     for (int i = 0; i < doc_count; i++) {
         printf("  ");
         ui_print_col(loads[i].name, 12);
         ui_print_col(loads[i].dept_name, 16);
-        ui_print_col_int(loads[i].appt_count, 8);
-        ui_print_col_int(loads[i].record_count, 8);
-        ui_print_col_int(loads[i].busy_level, 8);
+        ui_print_col_int(loads[i].appt_count, 6);
+        ui_print_col_int(loads[i].record_count, 6);
+        ui_print_col_int(loads[i].prescription_count, 6);
+        ui_print_col_float(loads[i].prescription_total, 8);
         printf(" %s\n", busy_level_label(loads[i].busy_level));
     }
 

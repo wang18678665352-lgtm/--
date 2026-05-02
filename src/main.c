@@ -241,8 +241,8 @@ void run_admin_menu(const User *user) {
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
-        int choice = get_menu_choice(0, 6);
-        
+        int choice = get_menu_choice(0, 9);
+
         switch (choice) {
             case 0:
                 logout(&global_session);
@@ -253,6 +253,9 @@ void run_admin_menu(const User *user) {
             case 4: admin_drug_menu(user); break;
             case 5: admin_ward_menu(user); break;
             case 6: admin_analysis_menu(user); break;
+            case 7: admin_schedule_menu(user); break;
+            case 8: admin_log_menu(user); break;
+            case 9: admin_data_menu(user); break;
         }
         pause_screen();
     }

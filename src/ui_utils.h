@@ -93,5 +93,13 @@ void ui_paginate(const char **items, int count, int page_size, const char *title
  * @return 选中的索引 (0-based)，-1 表示取消
  */
 int  ui_search_list(const char *prompt, const char **items, int count);
+/**
+ * 高亮列表选择（箭头键导航，回车确认）
+ * @param prompt    提示文字
+ * @param items     字符串数组
+ * @param count     总条数
+ * @return 选中的索引 (0-based)，-1 表示取消
+ */
+int  ui_select_list(const char *prompt, const char **items, int count);
 
 #endif

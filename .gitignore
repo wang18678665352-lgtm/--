@@ -6,3 +6,5 @@
 # 构建目录
 *.txt
 build/
+# 环境变量（含 API Key）
+.env

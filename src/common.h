@@ -20,8 +20,15 @@
 #define MAX_BUFFER 256
 #define MAX_MENU_ITEMS 30
 
-// Status codes
+// Status codes (must undef before define to avoid conflict with winerror.h)
+#ifndef SUCCESS
 #define SUCCESS 0
+#endif
+#undef ERROR_INVALID_INPUT
+#undef ERROR_NOT_FOUND
+#undef ERROR_DUPLICATE
+#undef ERROR_PERMISSION_DENIED
+#undef ERROR_FILE_IO
 #define ERROR_INVALID_INPUT -1
 #define ERROR_NOT_FOUND -2
 #define ERROR_DUPLICATE -3

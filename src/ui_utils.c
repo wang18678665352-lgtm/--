@@ -3,6 +3,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <conio.h>
 #endif
 
 // =======================  行跟踪（原位高亮用） =======================
@@ -561,69 +562,149 @@ int ui_search_list(const char *prompt, const char **items, int count) {
         return -1;
     }
 
+    int matches[500];
+    int mcount = count > 500 ? 500 : count;
+    for (int i = 0; i < mcount; i++) matches[i] = i;
+
     char input[64];
-    int last_matches[500];
-    int last_mcount = 0;
 
     while (1) {
-        printf(S_LABEL "  %s" C_RESET " (" C_DIM "输入关键字搜索, 序号直接选, q取消" C_RESET "): ",
-               prompt ? prompt : "搜索");
-        if (read_input_line(input, sizeof(input)) == NULL) return -1;
-
-        if (strcmp(input, "q") == 0 || strcmp(input, "Q") == 0) return -1;
-        if (input[0] == '\0') continue;
-
-        // Try direct number selection
-        {
-            int is_digits = 1;
-            for (char *p = input; *p; p++) {
-                if (*p < '0' || *p > '9') { is_digits = 0; break; }
-            }
-            if (is_digits) {
-                int max_idx = (last_mcount > 0) ? last_mcount : count;
-                int idx = atoi(input) - 1;
-                if (idx >= 0 && idx < max_idx) {
-                    if (last_mcount > 0) return last_matches[idx];
-                    return idx;
-                }
-                printf(S_ERROR "  序号超出范围 (1-%d)!" C_RESET "\n", max_idx);
-                continue;
-            }
-        }
-
-        // Substring search
-        int matches[500];
-        int mcount = 0;
-        for (int i = 0; i < count && mcount < 500; i++) {
-            if (str_contains_icase(items[i], input)) {
-                matches[mcount++] = i;
-            }
-        }
-
-        if (mcount == 0) {
-            ui_err("未匹配到任何结果。");
-            continue;
-        }
-
-        if (mcount == 1) {
-            printf(S_SUCCESS "  %s" C_RESET "\n", items[matches[0]]);
-            return matches[0];
-        }
-
-        // Store matches for subsequent number selection
-        memcpy(last_matches, matches, mcount * sizeof(int));
-        last_mcount = mcount;
-
-        // Show results (first 20)
-        printf("\n" S_LABEL "  %s 匹配到 %d 项:" C_RESET "\n", prompt ? prompt : "搜索结果", mcount);
-        ui_divider();
         int show_count = mcount > 20 ? 20 : mcount;
+        int more_lines = mcount > 20 ? 1 : 0;
+
+        printf("\n" S_LABEL "  %s:" C_RESET "\n", prompt ? prompt : "请选择");
+        ui_divider();
         for (int i = 0; i < show_count; i++) {
             printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", i + 1, items[matches[i]]);
         }
-        if (mcount > 20) {
-            printf(C_DIM "  ... 还有 %d 项, 输入更精确的关键字缩小范围" C_RESET "\n", mcount - 20);
+        if (more_lines) {
+            printf(C_DIM "  ... 还有 %d 项" C_RESET "\n", mcount - 20);
         }
-        // Loop back: user can enter number to select, or keyword to refine
+
+        printf(C_DIM "  ↑↓选择 回车确认 s搜索 q取消" C_RESET "\n");
+        fflush(stdout);
+
+        int highlight = 0;
+        int prev_highlight = -1;
+
+        while (1) {
+            int ch = _getch();
+
+            if (ch == 0xE0 || ch == 0x00) {
+                ch = _getch();
+                if (ch == 72) { highlight--; if (highlight < 0) highlight = show_count - 1; }
+                else if (ch == 80) { highlight++; if (highlight >= show_count) highlight = 0; }
+                else continue;
+            }
+            else if (ch == 0x1B) {
+                ch = _getch();
+                if (ch == '[') {
+                    ch = _getch();
+                    if (ch == 'A') { highlight--; if (highlight < 0) highlight = show_count - 1; }
+                    else if (ch == 'B') { highlight++; if (highlight >= show_count) highlight = 0; }
+                    else continue;
+                } else continue;
+            }
+            else if (ch == '\r' || ch == '\n') {
+                printf("\r\033[K\n");
+                return matches[highlight];
+            }
+            else if (ch == 's' || ch == 'S') {
+                printf("\r\033[K");
+                printf(S_LABEL "  搜索: " C_RESET);
+                fflush(stdout);
+                if (read_input_line(input, sizeof(input)) == NULL) return -1;
+
+                if (input[0] == '\0') {
+                    mcount = count > 500 ? 500 : count;
+                    for (int i = 0; i < mcount; i++) matches[i] = i;
+                    break;
+                }
+
+                int new_matches[500];
+                int new_mcount = 0;
+                for (int i = 0; i < count && new_mcount < 500; i++) {
+                    if (str_contains_icase(items[i], input)) {
+                        new_matches[new_mcount++] = i;
+                    }
+                }
+
+                if (new_mcount == 0) {
+                    ui_err("未匹配到任何结果。");
+                    break;
+                }
+
+                mcount = new_mcount;
+                memcpy(matches, new_matches, mcount * sizeof(int));
+                if (mcount == 1) {
+                    printf("\r\033[K");
+                    printf(S_SUCCESS "  %s" C_RESET "\n", items[matches[0]]);
+                    return matches[0];
+                }
+                break;
+            }
+            else if (ch == 'q' || ch == 'Q') {
+                printf("\r\033[K");
+                return -1;
+            }
+            else if (ch >= '1' && ch <= '9') {
+                int n = ch - '0';
+                if (n >= 1 && n <= show_count) {
+                    printf("\n");
+                    return matches[n - 1];
+                }
+                continue;
+            }
+            else {
+                continue;
+            }
+
+            if (highlight == prev_highlight) continue;
+
+            int dist = show_count + more_lines - highlight;
+
+            if (prev_highlight >= 0) {
+                int old_dist = show_count + more_lines - prev_highlight;
+                printf("\0337");
+                printf("\033[%dA", old_dist);
+                printf("\r\033[K");
+                printf("  " C_BOLD C_YELLOW "%2d." C_RESET " %s\n", prev_highlight + 1, items[matches[prev_highlight]]);
+                printf("\0338");
+            }
+
+            printf("\0337");
+            printf("\033[%dA", dist);
+            printf("\r\033[K");
+            printf("  " BG_CYAN C_WHITE C_BOLD "%2d. %s" C_RESET "\n", highlight + 1, items[matches[highlight]]);
+            printf("\0338");
+            fflush(stdout);
+
+            prev_highlight = highlight;
+        }
     }
+}
+
+int ui_select_list(const char *prompt, const char **items, int count) {
+    if (count <= 0) {
+        ui_warn("暂无数据。");
+        return -1;
+    }
+
+    ui_menu_cache_init();
+    int n = count > MAX_MENU_ITEMS ? MAX_MENU_ITEMS : count;
+    for (int i = 0; i < n; i++) {
+        ui_menu_item(i + 1, items[i]);
+    }
+    if (count > MAX_MENU_ITEMS) {
+        printf(C_DIM "  ... 共 %d 项（仅显示前 %d 项）" C_RESET "\n", count, MAX_MENU_ITEMS);
+        ui_menu_track_line();
+    }
+    ui_menu_track_line();
+
+    printf(S_LABEL "  %s" C_RESET "\n", prompt ? prompt : "请选择");
+    ui_menu_track_line();
+
+    int sel = get_menu_choice(1, n);
+    if (sel < 1) return -1;
+    return sel - 1;
 }

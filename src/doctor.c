@@ -324,6 +324,36 @@ int doctor_appointment_reminder_menu(const User *current_user) {
     } else {
         printf(" (较忙)\n");
     }
+
+    // Show today's schedule
+    {
+        char today_str[12];
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        strftime(today_str, sizeof(today_str), "%Y-%m-%d", tm_info);
+
+        ScheduleNode *sh = load_schedules_list();
+        ScheduleNode *sc = sh;
+        int found = 0;
+        while (sc) {
+            if (strcmp(sc->data.doctor_id, current_doctor->doctor_id) == 0 &&
+                strcmp(sc->data.work_date, today_str) == 0) {
+                if (!found) {
+                    printf(C_DIM "  今日排班: " C_RESET);
+                    found = 1;
+                }
+                printf(C_DIM "%s [%s]  " C_RESET, sc->data.time_slot, sc->data.status);
+            }
+            sc = sc->next;
+        }
+        if (found) {
+            printf("\n");
+        } else {
+            printf(C_DIM "  今日无排班或未设置\n" C_RESET);
+        }
+        free_schedule_list(sh);
+    }
+
     show_current_doctor_registrations(current_doctor);
     free(current_doctor);
     return SUCCESS;
@@ -351,11 +381,33 @@ int doctor_consultation_menu(const User *current_user) {
     printf("医生: %s [%s]\n", current_doctor->name, current_doctor->title);
     show_current_doctor_registrations(current_doctor);
 
+    // 显示当前叫号
+    {
+        OnsiteRegistrationQueue tmp_queue = load_onsite_registration_queue();
+        OnsiteRegistrationNode *tmp_node = tmp_queue.front;
+        int serving_num = 0;
+        while (tmp_node) {
+            if (strcmp(tmp_node->data.doctor_id, current_doctor->doctor_id) == 0 &&
+                strcmp(tmp_node->data.status, "就诊中") == 0) {
+                serving_num = tmp_node->data.queue_number;
+                break;
+            }
+            tmp_node = tmp_node->next;
+        }
+        free_onsite_registration_queue(&tmp_queue);
+        if (serving_num > 0) {
+            printf("  当前叫号: %d 号\n", serving_num);
+        } else {
+            printf("  当前叫号: 暂无\n");
+        }
+    }
+
     // 建议按队列顺序接诊：查找当前医生最早的"排队中"现场患者
     {
         OnsiteRegistrationQueue tmp_queue = load_onsite_registration_queue();
         OnsiteRegistrationNode *tmp_node = tmp_queue.front;
         int has_pending = 0;
+        int has_emergency = 0;
         while (tmp_node) {
             if (strcmp(tmp_node->data.doctor_id, current_doctor->doctor_id) == 0 &&
                 strcmp(tmp_node->data.status, "排队中") == 0) {
@@ -364,12 +416,23 @@ int doctor_consultation_menu(const User *current_user) {
                            tmp_node->data.onsite_id, tmp_node->data.queue_number);
                     has_pending = 1;
                 }
-                break; // 只显示队首第一个
+                // Check if this patient is emergency
+                Patient *p = find_patient_by_id(tmp_node->data.patient_id);
+                if (p && p->is_emergency) {
+                    printf(C_BOLD BG_RED "  !!! 急诊患者: %s (%s) !!!" C_RESET "\n", p->name, p->patient_id);
+                    has_emergency = 1;
+                    free(p);
+                    break; // emergency patient at front - show and stop
+                }
+                if (p) free(p);
+                if (has_pending) break; // only show first few
             }
             tmp_node = tmp_node->next;
         }
         if (!has_pending) {
             printf("\n当前无排队中的现场患者。\n");
+        } else if (has_emergency) {
+            printf(C_BOLD C_RED "  ⚠ 请优先处理急诊患者!" C_RESET "\n");
         }
         free_onsite_registration_queue(&tmp_queue);
     }

@@ -16,6 +16,8 @@
 #define MEDICAL_RECORDS_FILE DATA_DIR "/medical_records.txt"
 #define PRESCRIPTIONS_FILE DATA_DIR "/prescriptions.txt"
 #define TEMPLATES_FILE    DATA_DIR "/templates.txt"
+#define SCHEDULES_FILE    DATA_DIR "/schedules.txt"
+#define LOGS_FILE         DATA_DIR "/logs.txt"
 
 // 数据结构定义
 typedef struct {
@@ -55,6 +57,7 @@ typedef struct {
     int warning_line;
     bool is_special;
     float reimbursement_ratio;
+    char category[20];
 } Drug;
 
 typedef struct {
@@ -124,6 +127,26 @@ typedef struct {
     char text[500];
 } MedicalTemplate;
 
+typedef struct {
+    char schedule_id[MAX_ID];
+    char doctor_id[MAX_ID];
+    char work_date[12];
+    char time_slot[10];
+    int max_appt;
+    int max_onsite;
+    char status[10];
+} Schedule;
+
+typedef struct {
+    char log_id[MAX_ID];
+    char operator_name[MAX_USERNAME];
+    char action[20];
+    char target[20];
+    char target_id[MAX_ID];
+    char detail[200];
+    char create_time[30];
+} LogEntry;
+
 // 链表节点结构定义
 typedef struct UserNode {
     User data;
@@ -176,6 +199,16 @@ typedef struct WardCallNode {
     struct WardCallNode *next;
 } WardCallNode;
 
+typedef struct ScheduleNode {
+    Schedule data;
+    struct ScheduleNode *next;
+} ScheduleNode;
+
+typedef struct LogEntryNode {
+    LogEntry data;
+    struct LogEntryNode *next;
+} LogEntryNode;
+
 typedef struct MedicalRecordNode {
     MedicalRecord data;
     struct MedicalRecordNode *next;
@@ -227,7 +260,7 @@ void free_onsite_registration_list(OnsiteRegistrationNode *head);
 int count_onsite_registration_list(OnsiteRegistrationNode *head);
 
 void init_onsite_registration_queue(OnsiteRegistrationQueue *queue);
-int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegistration *registration);
+int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegistration *registration, bool front);
 int dequeue_onsite_registration(OnsiteRegistrationQueue *queue, OnsiteRegistration *registration);
 void free_onsite_registration_queue(OnsiteRegistrationQueue *queue);
 
@@ -291,6 +324,27 @@ MedicalRecord* find_records_by_patient(const char *patient_id);
 
 PrescriptionNode* load_prescriptions_list(void);
 int save_prescriptions_list(PrescriptionNode *head);
+
+// 排班操作
+ScheduleNode* create_schedule_node(const Schedule *schedule);
+void free_schedule_list(ScheduleNode *head);
+int count_schedule_list(ScheduleNode *head);
+ScheduleNode* load_schedules_list(void);
+int save_schedules_list(ScheduleNode *head);
+int has_doctor_schedule(const char *doctor_id, const char *date);
+
+// 日志操作
+LogEntryNode* create_log_entry_node(const LogEntry *entry);
+void free_log_entry_list(LogEntryNode *head);
+int count_log_entry_list(LogEntryNode *head);
+LogEntryNode* load_logs_list(void);
+int append_log(const char *operator_name, const char *action, const char *target, const char *target_id, const char *detail);
+
+// 数据备份与恢复
+int backup_data(void);
+int restore_data(const char *backup_dir);
+int list_backups(const char ***out_names, int *out_count);
+void free_backups_list(const char **names, int count);
 
 // 模板操作
 TemplateNode* load_templates_list(void);

@@ -2,6 +2,7 @@
 #include "data_storage.h"
 #include "public.h"
 #include "ui_utils.h"
+#include "sha256.h"
 
 static void list_departments(void) {
     DepartmentNode *head = load_departments_list();
@@ -28,7 +29,7 @@ static void list_departments(void) {
         i++; cur = cur->next;
     }
 
-    ui_paginate(items, count, 15, "科室列表");
+    ui_search_list("科室列表(输入搜索, Esc返回)", items, count);
 
     free((void*)items);
     free(buf);
@@ -61,7 +62,7 @@ static void list_doctors(void) {
         i++; cur = cur->next;
     }
 
-    ui_paginate(items, count, 15, "医生列表");
+    ui_search_list("医生列表(输入搜索, Esc返回)", items, count);
 
     free((void*)items);
     free(buf);
@@ -95,7 +96,7 @@ static void list_patients(void) {
         i++; cur = cur->next;
     }
 
-    ui_paginate(items, count, 15, "患者列表");
+    ui_search_list("患者列表(输入搜索, Esc返回)", items, count);
 
     free((void*)items);
     free(buf);
@@ -112,14 +113,15 @@ static void list_drugs(void) {
     }
 
     const char **items = malloc(count * sizeof(const char *));
-    char (*buf)[120] = malloc(count * sizeof(*buf));
+    char (*buf)[140] = malloc(count * sizeof(*buf));
 
     int i = 0;
     DrugNode *cur = head;
     while (cur) {
-        snprintf(buf[i], 120, "%-10s %-16s %8.2f %4d %4d %5.0f%%",
+        snprintf(buf[i], 140, "%-10s %-14s %-8s %8.2f %4d %4d %5.0f%%",
                  cur->data.drug_id,
                  cur->data.name,
+                 cur->data.category,
                  cur->data.price,
                  cur->data.stock_num,
                  cur->data.warning_line,
@@ -128,7 +130,7 @@ static void list_drugs(void) {
         i++; cur = cur->next;
     }
 
-    ui_paginate(items, count, 15, "药品列表");
+    ui_search_list("药品列表(输入搜索, Esc返回)", items, count);
 
     free((void*)items);
     free(buf);
@@ -161,7 +163,7 @@ static void list_wards(void) {
         i++; cur = cur->next;
     }
 
-    ui_paginate(items, count, 15, "病房列表");
+    ui_search_list("病房列表(输入搜索, Esc返回)", items, count);
 
     free((void*)items);
     free(buf);
@@ -175,7 +177,10 @@ void admin_main_menu(const User *current_user) {
     ui_menu_item(3, "患者管理");
     ui_menu_item(4, "药物管理");
     ui_menu_item(5, "病房管理");
-    ui_menu_item(6, "分析报表");
+    ui_menu_item(6, "排班管理");
+    ui_menu_item(7, "分析报表");
+    ui_menu_item(8, "操作日志");
+    ui_menu_item(9, "数据管理");
 }
 
 int admin_department_menu(const User *current_user) {
@@ -279,6 +284,7 @@ int admin_department_menu(const User *current_user) {
 
             save_departments_list(head);
             free_department_list(head);
+            append_log(current_user->username, "create", "department", dept_id, dept.name);
             printf("科室 %s 创建成功!\n", dept_id);
             return SUCCESS;
         case 3: {
@@ -333,6 +339,7 @@ int admin_department_menu(const User *current_user) {
 
             save_departments_list(head);
             free_department_list(head);
+            append_log(current_user->username, "update", "department", current->data.department_id, current->data.name);
             printf("科室修改成功!\n");
             return SUCCESS;
         }
@@ -387,6 +394,7 @@ int admin_department_menu(const User *current_user) {
             } else {
                 prev->next = current->next;
             }
+            append_log(current_user->username, "delete", "department", current->data.department_id, current->data.name);
             free(current);
             save_departments_list(head);
             free_department_list(head);
@@ -411,15 +419,119 @@ int admin_doctor_menu(const User *current_user) {
     printf("1. 查看所有医生\n");
     printf("2. 修改医生信息\n");
     printf("3. 删除医生\n");
+    printf("4. 新增医生\n");
     printf("0. 返回\n");
 
-    choice = get_menu_choice(0, 3);
+    choice = get_menu_choice(0, 4);
     switch (choice) {
         case 0:
             return SUCCESS;
         case 1:
             list_doctors();
             return SUCCESS;
+        case 4: {
+            char new_username[MAX_USERNAME];
+            char new_name[MAX_NAME];
+            char new_title[50];
+            char new_dept[MAX_ID];
+            User new_user;
+            uint8_t hash_bytes[SHA256_DIGEST_SIZE];
+            char hash_hex[SHA256_HEX_SIZE];
+
+            ui_sub_header("新增医生");
+
+            printf("请输入用户名: ");
+            if (fgets(new_username, sizeof(new_username), stdin) == NULL) return ERROR_INVALID_INPUT;
+            new_username[strcspn(new_username, "\n")] = 0;
+
+            // Check username duplicate
+            {
+                UserNode *uh = load_users_list();
+                UserNode *uc = uh;
+                int dup = 0;
+                while (uc) {
+                    if (strcmp(uc->data.username, new_username) == 0) { dup = 1; break; }
+                    uc = uc->next;
+                }
+                free_user_list(uh);
+                if (dup) { ui_err("用户名已存在!"); return ERROR_DUPLICATE; }
+            }
+
+            printf("请输入姓名: ");
+            if (fgets(new_name, sizeof(new_name), stdin) == NULL) return ERROR_INVALID_INPUT;
+            new_name[strcspn(new_name, "\n")] = 0;
+
+            // Title selection
+            {
+                const char *title_options[] = {
+                    "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
+                    "主任药师", "副主任药师", "主管药师", "药师",
+                    "主任护师", "副主任护师", "主管护师", "护师", "护士",
+                    "教授", "副教授", "研究员", "副研究员"
+                };
+                int title_count = sizeof(title_options) / sizeof(title_options[0]);
+                int title_sel = ui_select_list("选择职称", title_options, title_count);
+                if (title_sel >= 0) strcpy(new_title, title_options[title_sel]);
+                else strcpy(new_title, "医生");
+            }
+
+            // Department selection
+            new_dept[0] = '\0';
+            {
+                DepartmentNode *dept_head = load_departments_list();
+                if (dept_head) {
+                    int dc = count_department_list(dept_head);
+                    if (dc > 0) {
+                        const char **di = malloc(dc * sizeof(const char *));
+                        char (*db)[70] = malloc(dc * sizeof(*db));
+                        int idx = 0;
+                        DepartmentNode *dp = dept_head;
+                        while (dp) {
+                            snprintf(db[idx], 70, "%s - %s", dp->data.department_id, dp->data.name);
+                            di[idx] = db[idx]; idx++; dp = dp->next;
+                        }
+                        int sel = ui_search_list("选择所属科室", (const char **)di, dc);
+                        if (sel >= 0) {
+                            dp = dept_head;
+                            for (int j = 0; j < sel; j++) dp = dp->next;
+                            strcpy(new_dept, dp->data.department_id);
+                        }
+                        free((void*)di); free(db);
+                    }
+                }
+                free_department_list(dept_head);
+            }
+
+            // Create user with default password (username+123)
+            memset(&new_user, 0, sizeof(new_user));
+            strcpy(new_user.username, new_username);
+            strcpy(new_user.role, ROLE_DOCTOR);
+            {
+                char default_pwd[MAX_USERNAME + 10];
+                snprintf(default_pwd, sizeof(default_pwd), "%s123", new_username);
+                sha256_hash((const uint8_t*)default_pwd, strlen(default_pwd), hash_bytes);
+                sha256_hex(hash_bytes, hash_hex);
+                strcpy(new_user.password, hash_hex);
+            }
+
+            // Save user
+            {
+                UserNode *uh = load_users_list();
+                UserNode *un = create_user_node(&new_user);
+                if (!un) { free_user_list(uh); return ERROR_FILE_IO; }
+                if (!uh) { uh = un; }
+                else { UserNode *t = uh; while (t->next) t = t->next; t->next = un; }
+                save_users_list(uh);
+                free_user_list(uh);
+            }
+
+            // Create doctor profile
+            create_doctor_profile_with_details(new_username, new_name, new_title, new_dept);
+
+            append_log(current_user->username, "create", "doctor", new_user.username, new_name);
+            printf("医生 %s (%s) 创建成功! 默认密码: %s123\n", new_name, new_username, new_username);
+            return SUCCESS;
+        }
         case 2: {
             head = load_doctors_list();
             int dc = count_doctor_list(head);
@@ -453,42 +565,59 @@ int admin_doctor_menu(const User *current_user) {
                 if (input[0] != '\0') strcpy(current->data.name, input);
             }
 
-            printf("当前职称: %s, 输入新职称(直接回车不改): ", current->data.title);
-            if (fgets(input, sizeof(input), stdin)) {
-                input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') strcpy(current->data.title, input);
+            // 职称选择
+            {
+                const char *title_options[] = {
+                    "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
+                    "主任药师", "副主任药师", "主管药师", "药师",
+                    "主任护师", "副主任护师", "主管护师", "护师", "护士",
+                    "教授", "副教授", "研究员", "副研究员"
+                };
+                int title_count = sizeof(title_options) / sizeof(title_options[0]);
+                printf("当前职称: %s\n", current->data.title);
+                int title_sel = ui_select_list("选择新职称", title_options, title_count);
+                if (title_sel >= 0) {
+                    strcpy(current->data.title, title_options[title_sel]);
+                }
             }
 
-            printf("当前科室: %s, 输入新科室编号(直接回车不改): ",
-                   current->data.department_id[0] ? current->data.department_id : "未分配");
-            if (fgets(input, sizeof(input), stdin)) {
-                input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') {
-                    DepartmentNode *dept_head = load_departments_list();
-                    DepartmentNode *dept_current = dept_head;
-                    int dept_found = 0;
-                    while (dept_current) {
-                        if (strcmp(dept_current->data.department_id, input) == 0) {
-                            dept_found = 1;
-                            break;
+            // 科室选择
+            {
+                DepartmentNode *dept_head = load_departments_list();
+                if (dept_head) {
+                    int dc = count_department_list(dept_head);
+                    if (dc > 0) {
+                        const char **di = malloc(dc * sizeof(const char *));
+                        char (*db)[70] = malloc(dc * sizeof(*db));
+                        int idx = 0;
+                        DepartmentNode *dp = dept_head;
+                        while (dp) {
+                            snprintf(db[idx], 70, "%s - %s", dp->data.department_id, dp->data.name);
+                            di[idx] = db[idx]; idx++; dp = dp->next;
                         }
-                        dept_current = dept_current->next;
-                    }
-                    free_department_list(dept_head);
-                    if (!dept_found) {
-                        printf("科室编号 %s 不存在! 保持原科室不变。\n", input);
+                        printf("当前科室: %s\n", current->data.department_id[0] ? current->data.department_id : "未分配");
+                        int sel = ui_search_list("选择新科室", (const char **)di, dc);
+                        if (sel >= 0) {
+                            dp = dept_head;
+                            for (int j = 0; j < sel; j++) dp = dp->next;
+                            char old_id[MAX_ID];
+                            char new_id[MAX_ID];
+                            strcpy(old_id, current->data.doctor_id);
+                            strcpy(current->data.department_id, dp->data.department_id);
+                            generate_doctor_id(dp->data.department_id, new_id, MAX_ID);
+                            if (strcmp(old_id, new_id) != 0) {
+                                strcpy(current->data.doctor_id, new_id);
+                                update_doctor_id_across_files(old_id, new_id);
+                            }
+                        }
+                        free((void*)di); free(db);
                     } else {
-                        char old_id[MAX_ID];
-                        char new_id[MAX_ID];
-                        strcpy(old_id, current->data.doctor_id);
-                        strcpy(current->data.department_id, input);
-                        generate_doctor_id(input, new_id, MAX_ID);
-                        if (strcmp(old_id, new_id) != 0) {
-                            strcpy(current->data.doctor_id, new_id);
-                            update_doctor_id_across_files(old_id, new_id);
-                        }
+                        ui_warn("暂无科室数据，无法修改科室。");
                     }
+                } else {
+                    ui_warn("暂无科室数据，无法修改科室。");
                 }
+                free_department_list(dept_head);
             }
 
             save_doctors_list(head);
@@ -572,6 +701,7 @@ int admin_doctor_menu(const User *current_user) {
             } else {
                 prev->next = current->next;
             }
+            append_log(current_user->username, "delete", "doctor", current->data.doctor_id, current->data.name);
             free(current);
             save_doctors_list(head);
             free_doctor_list(head);
@@ -597,15 +727,111 @@ int admin_patient_menu(const User *current_user) {
     printf("1. 查看所有患者\n");
     printf("2. 修改患者信息\n");
     printf("3. 删除患者\n");
+    printf("4. 新增患者\n");
     printf("0. 返回\n");
 
-    choice = get_menu_choice(0, 3);
+    choice = get_menu_choice(0, 4);
     switch (choice) {
         case 0:
             return SUCCESS;
         case 1:
             list_patients();
             return SUCCESS;
+        case 4: {
+            char new_username[MAX_USERNAME];
+            char new_name[MAX_NAME];
+            char new_phone[20];
+            char new_patient_type[20];
+            User new_user;
+            uint8_t hash_bytes[SHA256_DIGEST_SIZE];
+            char hash_hex[SHA256_HEX_SIZE];
+
+            ui_sub_header("新增患者");
+
+            printf("请输入用户名: ");
+            if (fgets(new_username, sizeof(new_username), stdin) == NULL) return ERROR_INVALID_INPUT;
+            new_username[strcspn(new_username, "\n")] = 0;
+
+            // Check username duplicate
+            {
+                UserNode *uh = load_users_list();
+                UserNode *uc = uh;
+                int dup = 0;
+                while (uc) {
+                    if (strcmp(uc->data.username, new_username) == 0) { dup = 1; break; }
+                    uc = uc->next;
+                }
+                free_user_list(uh);
+                if (dup) { ui_err("用户名已存在!"); return ERROR_DUPLICATE; }
+            }
+
+            printf("请输入姓名: ");
+            if (fgets(new_name, sizeof(new_name), stdin) == NULL) return ERROR_INVALID_INPUT;
+            new_name[strcspn(new_name, "\n")] = 0;
+
+            printf("请输入电话(7-15位数字): ");
+            if (fgets(new_phone, sizeof(new_phone), stdin) == NULL) return ERROR_INVALID_INPUT;
+            new_phone[strcspn(new_phone, "\n")] = 0;
+            if (new_phone[0] != '\0' && !is_valid_phone(new_phone)) {
+                ui_err("电话号码无效!");
+                return ERROR_INVALID_INPUT;
+            }
+
+            {
+                const char *type_options[] = {"普通", "医保", "军人"};
+                int tsel = ui_select_list("选择患者类型", type_options, 3);
+                if (tsel >= 0) strcpy(new_patient_type, type_options[tsel]);
+                else strcpy(new_patient_type, "普通");
+            }
+
+            // Create user
+            memset(&new_user, 0, sizeof(new_user));
+            strcpy(new_user.username, new_username);
+            strcpy(new_user.role, ROLE_PATIENT);
+            {
+                char default_pwd[MAX_USERNAME + 10];
+                snprintf(default_pwd, sizeof(default_pwd), "%s123", new_username);
+                sha256_hash((const uint8_t*)default_pwd, strlen(default_pwd), hash_bytes);
+                sha256_hex(hash_bytes, hash_hex);
+                strcpy(new_user.password, hash_hex);
+            }
+
+            {
+                UserNode *uh = load_users_list();
+                UserNode *un = create_user_node(&new_user);
+                if (!un) { free_user_list(uh); return ERROR_FILE_IO; }
+                if (!uh) { uh = un; }
+                else { UserNode *t = uh; while (t->next) t = t->next; t->next = un; }
+                save_users_list(uh);
+                free_user_list(uh);
+            }
+
+            // Create patient profile
+            {
+                PatientNode *ph = load_patients_list();
+                Patient new_patient;
+                memset(&new_patient, 0, sizeof(new_patient));
+                generate_id(new_patient.patient_id, MAX_ID, "P");
+                strcpy(new_patient.username, new_username);
+                strcpy(new_patient.name, new_name);
+                strcpy(new_patient.gender, "未知");
+                strcpy(new_patient.phone, new_phone);
+                strcpy(new_patient.patient_type, new_patient_type);
+                strcpy(new_patient.treatment_stage, "初诊");
+                new_patient.is_emergency = false;
+
+                PatientNode *pn = create_patient_node(&new_patient);
+                if (!pn) { free_patient_list(ph); return ERROR_FILE_IO; }
+                if (!ph) { ph = pn; }
+                else { PatientNode *t = ph; while (t->next) t = t->next; t->next = pn; }
+                save_patients_list(ph);
+                free_patient_list(ph);
+            }
+
+            append_log(current_user->username, "create", "patient", new_user.username, new_name);
+            printf("患者 %s (%s) 创建成功! 默认密码: %s123\n", new_name, new_username, new_username);
+            return SUCCESS;
+        }
         case 2: {
             head = load_patients_list();
             int pc = count_patient_list(head);
@@ -645,10 +871,12 @@ int admin_patient_menu(const User *current_user) {
                 if (input[0] != '\0') strcpy(current->data.name, input);
             }
 
-            printf("当前性别: %s, 输入新性别(男/女, 直接回车不改): ", current->data.gender);
-            if (fgets(input, sizeof(input), stdin)) {
-                input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') strcpy(current->data.gender, input);
+            // 性别选择
+            {
+                const char *gender_options[] = {"男", "女"};
+                printf("当前性别: %s\n", current->data.gender);
+                int gsel = ui_select_list("选择新性别", gender_options, 2);
+                if (gsel >= 0) strcpy(current->data.gender, gender_options[gsel]);
             }
 
             printf("当前年龄: %d, 输入新年龄(-1不改): ", current->data.age);
@@ -679,17 +907,12 @@ int admin_patient_menu(const User *current_user) {
                 }
             }
 
-            printf("当前患者类型(%s), 输入新类型(普通/医保/军人, 直接回车不改): ", current->data.patient_type);
-            if (fgets(input, sizeof(input), stdin)) {
-                input[strcspn(input, "\n")] = 0;
-                if (input[0] != '\0') {
-                    if (strcmp(input, "普通") != 0 && strcmp(input, "医保") != 0 && strcmp(input, "军人") != 0) {
-                        ui_err("无效的患者类型! 有效值: 普通/医保/军人");
-                        free_patient_list(head);
-                        return ERROR_INVALID_INPUT;
-                    }
-                    strcpy(current->data.patient_type, input);
-                }
+            // 患者类型选择
+            {
+                const char *type_options[] = {"普通", "医保", "军人"};
+                printf("当前患者类型: %s\n", current->data.patient_type);
+                int tsel = ui_select_list("选择新患者类型", type_options, 3);
+                if (tsel >= 0) strcpy(current->data.patient_type, type_options[tsel]);
             }
 
             save_patients_list(head);
@@ -765,6 +988,7 @@ int admin_patient_menu(const User *current_user) {
             } else {
                 prev->next = current->next;
             }
+            append_log(current_user->username, "delete", "patient", current->data.patient_id, current->data.name);
             free(current);
             save_patients_list(head);
             free_patient_list(head);
@@ -795,9 +1019,10 @@ int admin_drug_menu(const User *current_user) {
     printf("4. 药品补货\n");
     printf("5. 删除药品\n");
     printf("6. 库存预警\n");
+    printf("7. 批量补货\n");
     printf("0. 返回\n");
 
-    choice = get_menu_choice(0, 6);
+    choice = get_menu_choice(0, 7);
     switch (choice) {
         case 0:
             return SUCCESS;
@@ -882,6 +1107,13 @@ int admin_drug_menu(const User *current_user) {
             }
             clear_input_buffer();
 
+            {
+                const char *cat_options[] = {"西药", "中成药", "中药饮片", "耗材", "其他"};
+                int cat_sel = ui_select_list("选择药品分类", cat_options, 5);
+                if (cat_sel >= 0) strcpy(drug.category, cat_options[cat_sel]);
+                else strcpy(drug.category, "西药");
+            }
+
             new_node = create_drug_node(&drug);
             if (!new_node) {
                 free_drug_list(head);
@@ -897,6 +1129,7 @@ int admin_drug_menu(const User *current_user) {
             }
             save_drugs_list(head);
             free_drug_list(head);
+            append_log(current_user->username, "create", "drug", drug_id, drug.name);
             printf("药品 %s 创建成功!\n", drug_id);
             return SUCCESS;
         case 3: {
@@ -926,6 +1159,7 @@ int admin_drug_menu(const User *current_user) {
             printf("  %-10s %d\n", "库存:", current->data.stock_num);
             printf("  %-10s %d\n", "预警阈值:", current->data.warning_line);
             printf("  %-10s %.0f%%\n", "报销率:", current->data.reimbursement_ratio * 100);
+            printf("  %-10s %s\n", "分类:", current->data.category);
             ui_divider();
 
             printf("当前名称: %s, 输入新名称(直接回车不改): ", current->data.name);
@@ -965,8 +1199,16 @@ int admin_drug_menu(const User *current_user) {
                 clear_input_buffer();
             }
 
+            {
+                const char *cat_options[] = {"西药", "中成药", "中药饮片", "耗材", "其他"};
+                printf("当前分类: %s\n", current->data.category);
+                int cat_sel = ui_select_list("选择新分类", cat_options, 5);
+                if (cat_sel >= 0) strcpy(current->data.category, cat_options[cat_sel]);
+            }
+
             save_drugs_list(head);
             free_drug_list(head);
+            append_log(current_user->username, "update", "drug", current->data.drug_id, current->data.name);
             printf("药品信息修改成功!\n");
             return SUCCESS;
         }
@@ -1002,6 +1244,11 @@ int admin_drug_menu(const User *current_user) {
 
             current->data.stock_num += add_stock;
             save_drugs_list(head);
+            {
+                char detail[60];
+                snprintf(detail, sizeof(detail), "%s +%d(库存:%d)", current->data.name, add_stock, current->data.stock_num);
+                append_log(current_user->username, "update", "drug", current->data.drug_id, detail);
+            }
             printf("补货成功，当前库存: %d\n", current->data.stock_num);
             free_drug_list(head);
             return SUCCESS;
@@ -1038,6 +1285,7 @@ int admin_drug_menu(const User *current_user) {
             } else {
                 prev->next = current->next;
             }
+            append_log(current_user->username, "delete", "drug", current->data.drug_id, current->data.name);
             free(current);
             save_drugs_list(head);
             free_drug_list(head);
@@ -1047,6 +1295,67 @@ int admin_drug_menu(const User *current_user) {
         case 6:
             check_drug_warning();
             return SUCCESS;
+        case 7: {
+            head = load_drugs_list();
+            int dc = count_drug_list(head);
+            if (dc == 0) { ui_warn("暂无药品数据。"); free_drug_list(head); return SUCCESS; }
+
+            const char **di = malloc(dc * sizeof(const char *));
+            char (*db)[120] = malloc(dc * sizeof(*db));
+            int di_idx = 0;
+            DrugNode *dcu = head;
+            while (dcu) {
+                snprintf(db[di_idx], 120, "%s - %s (库存:%d)", dcu->data.drug_id, dcu->data.name, dcu->data.stock_num);
+                di[di_idx] = db[di_idx]; di_idx++; dcu = dcu->next;
+            }
+
+            bool *selected = calloc(dc, sizeof(bool));
+            int sel_count = 0;
+
+            while (1) {
+                printf("\n当前已选 %d 种药品。\n", sel_count);
+                int sel = ui_search_list("选择药品(选完后按Esc结束批量选择)", di, dc);
+                if (sel < 0) { break; }
+                if (!selected[sel]) {
+                    selected[sel] = true;
+                    sel_count++;
+                    printf("已选择: %s\n", db[sel]);
+                } else {
+                    printf("该药品已在选择列表中。\n");
+                }
+            }
+
+            if (sel_count == 0) {
+                free((void*)di); free(db); free(selected); free_drug_list(head);
+                return SUCCESS;
+            }
+
+            printf("请输入每种药品的补货数量: ");
+            int qty;
+            if (scanf("%d", &qty) != 1 || qty <= 0) {
+                clear_input_buffer();
+                free((void*)di); free(db); free(selected); free_drug_list(head);
+                return ERROR_INVALID_INPUT;
+            }
+            clear_input_buffer();
+
+            int applied = 0;
+            dcu = head;
+            for (int i = 0; i < dc && dcu; i++) {
+                if (selected[i]) { dcu->data.stock_num += qty; applied++; }
+                dcu = dcu->next;
+            }
+
+            save_drugs_list(head);
+            {
+                char detail[60];
+                snprintf(detail, sizeof(detail), "%d种药品各+%d", applied, qty);
+                append_log(current_user->username, "update", "drug", "batch", detail);
+            }
+            printf("批量补货完成! %d 种药品每种增加 %d。\n", applied, qty);
+            free((void*)di); free(db); free(selected); free_drug_list(head);
+            return SUCCESS;
+        }
         default:
             return ERROR_INVALID_INPUT;
     }
@@ -1157,6 +1466,7 @@ int admin_ward_menu(const User *current_user) {
             }
             save_wards_list(ward_head);
             free_ward_list(ward_head);
+            append_log(current_user->username, "create", "ward", ward_id, ward.type);
             printf("病房 %s 创建成功!\n", ward_id);
             return SUCCESS;
         case 3: {
@@ -1215,6 +1525,7 @@ int admin_ward_menu(const User *current_user) {
 
             save_wards_list(ward_head);
             free_ward_list(ward_head);
+            append_log(current_user->username, "update", "ward", current_ward->data.ward_id, current_ward->data.type);
             printf("病房信息修改成功!\n");
             return SUCCESS;
         }
@@ -1250,6 +1561,7 @@ int admin_ward_menu(const User *current_user) {
             } else {
                 prev->next = current_ward->next;
             }
+            append_log(current_user->username, "delete", "ward", current_ward->data.ward_id, current_ward->data.type);
             free(current_ward);
             save_wards_list(ward_head);
             free_ward_list(ward_head);
@@ -1293,6 +1605,11 @@ int admin_ward_menu(const User *current_user) {
             }
             current_ward->data.remain_beds = remain_beds;
             save_wards_list(ward_head);
+            {
+                char detail[60];
+                snprintf(detail, sizeof(detail), "%s 剩余床位:%d", current_ward->data.type, remain_beds);
+                append_log(current_user->username, "update", "ward", current_ward->data.ward_id, detail);
+            }
             printf("病房床位更新成功。\n");
             free_ward_list(ward_head);
             return SUCCESS;
@@ -1413,3 +1730,457 @@ int admin_ward_menu(const User *current_user) {
 }
 
 // Replaced by admin_analysis_menu() in analysis.c
+
+// ======================= 排班管理 =======================
+
+static void list_schedules(void) {
+    ScheduleNode *head = load_schedules_list();
+    int count = count_schedule_list(head);
+
+    if (count == 0) {
+        ui_warn("暂无排班数据。");
+        free_schedule_list(head);
+        return;
+    }
+
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[100] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    ScheduleNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 100, "%-16s %-10s %-10s %-6s %3d %3d %-6s",
+                 cur->data.schedule_id,
+                 cur->data.doctor_id,
+                 cur->data.work_date,
+                 cur->data.time_slot,
+                 cur->data.max_appt,
+                 cur->data.max_onsite,
+                 cur->data.status);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_paginate(items, count, 15, "排班列表");
+
+    free((void*)items);
+    free(buf);
+    free_schedule_list(head);
+}
+
+int admin_schedule_menu(const User *current_user) {
+    (void)current_user;
+    ScheduleNode *head = NULL;
+    ScheduleNode *current = NULL;
+    ScheduleNode *prev = NULL;
+    ScheduleNode *new_node = NULL;
+    Schedule schedule;
+    char schedule_id[MAX_ID];
+    char doctor_id[MAX_ID];
+    char work_date[12];
+    char time_slot[10];
+    char start_date[12];
+    char end_date[12];
+    char input[MAX_BUFFER];
+    int choice;
+
+    ui_header("排班管理");
+    printf("1. 查看所有排班\n");
+    printf("2. 新增排班\n");
+    printf("3. 批量排班\n");
+    printf("4. 修改排班\n");
+    printf("5. 删除排班\n");
+    printf("6. 停诊/恢复\n");
+    printf("0. 返回\n");
+
+    choice = get_menu_choice(0, 6);
+    switch (choice) {
+        case 0:
+            return SUCCESS;
+        case 1:
+            list_schedules();
+            return SUCCESS;
+
+        case 2:
+            printf("\n请输入医生编号: ");
+            if (fgets(doctor_id, sizeof(doctor_id), stdin) == NULL) return ERROR_INVALID_INPUT;
+            doctor_id[strcspn(doctor_id, "\n")] = 0;
+
+            printf("请输入排班日期(如 2026-05-02): ");
+            if (fgets(work_date, sizeof(work_date), stdin) == NULL) return ERROR_INVALID_INPUT;
+            work_date[strcspn(work_date, "\n")] = 0;
+
+            printf("选择时段 (1.上午 2.下午 3.全天): ");
+            {
+                int ts;
+                if (scanf("%d", &ts) != 1) { clear_input_buffer(); return ERROR_INVALID_INPUT; }
+                clear_input_buffer();
+                if (ts == 1) strcpy(time_slot, "上午");
+                else if (ts == 2) strcpy(time_slot, "下午");
+                else strcpy(time_slot, "全天");
+            }
+
+            // Check for duplicate
+            head = load_schedules_list();
+            current = head;
+            while (current) {
+                if (strcmp(current->data.doctor_id, doctor_id) == 0 &&
+                    strcmp(current->data.work_date, work_date) == 0 &&
+                    strcmp(current->data.time_slot, time_slot) == 0) {
+                    ui_err("该医生在此时间段已有排班!");
+                    free_schedule_list(head);
+                    return ERROR_DUPLICATE;
+                }
+                current = current->next;
+            }
+
+            memset(&schedule, 0, sizeof(schedule));
+            generate_id(schedule.schedule_id, MAX_ID, "SC");
+            strcpy(schedule.doctor_id, doctor_id);
+            strcpy(schedule.work_date, work_date);
+            strcpy(schedule.time_slot, time_slot);
+            schedule.max_appt = 6;
+            schedule.max_onsite = 8;
+            strcpy(schedule.status, "正常");
+
+            new_node = create_schedule_node(&schedule);
+            if (!new_node) { free_schedule_list(head); return ERROR_FILE_IO; }
+
+            if (!head) {
+                head = new_node;
+            } else {
+                ScheduleNode *tail = head;
+                while (tail->next) tail = tail->next;
+                tail->next = new_node;
+            }
+
+            save_schedules_list(head);
+            free_schedule_list(head);
+            {
+                char detail[60];
+                snprintf(detail, sizeof(detail), "%s %s %s", doctor_id, work_date, time_slot);
+                append_log(current_user->username, "create", "schedule", schedule.schedule_id, detail);
+            }
+            printf("排班创建成功! 编号: %s\n", schedule.schedule_id);
+            return SUCCESS;
+
+        case 3:
+            printf("\n请输入医生编号: ");
+            if (fgets(doctor_id, sizeof(doctor_id), stdin) == NULL) return ERROR_INVALID_INPUT;
+            doctor_id[strcspn(doctor_id, "\n")] = 0;
+
+            printf("请输入开始日期(如 2026-05-01): ");
+            if (fgets(start_date, sizeof(start_date), stdin) == NULL) return ERROR_INVALID_INPUT;
+            start_date[strcspn(start_date, "\n")] = 0;
+
+            printf("请输入结束日期(如 2026-05-07): ");
+            if (fgets(end_date, sizeof(end_date), stdin) == NULL) return ERROR_INVALID_INPUT;
+            end_date[strcspn(end_date, "\n")] = 0;
+
+            printf("选择时段 (1.上午 2.下午 3.全天): ");
+            {
+                int ts;
+                if (scanf("%d", &ts) != 1) { clear_input_buffer(); return ERROR_INVALID_INPUT; }
+                clear_input_buffer();
+                if (ts == 1) strcpy(time_slot, "上午");
+                else if (ts == 2) strcpy(time_slot, "下午");
+                else strcpy(time_slot, "全天");
+            }
+
+            head = load_schedules_list();
+            {
+                // Parse dates and iterate
+                int sy, sm, sd, ey, em, ed;
+                int created = 0;
+                if (sscanf(start_date, "%d-%d-%d", &sy, &sm, &sd) != 3 ||
+                    sscanf(end_date, "%d-%d-%d", &ey, &em, &ed) != 3) {
+                    ui_err("日期格式无效!");
+                    free_schedule_list(head);
+                    return ERROR_INVALID_INPUT;
+                }
+
+                // Iterate day by day
+                int cy = sy, cm = sm, cd = sd;
+                while (1) {
+                    // Check if past end date
+                    if (cy > ey || (cy == ey && cm > em) || (cy == ey && cm == em && cd > ed))
+                        break;
+
+                    char cur_date[12];
+                    snprintf(cur_date, sizeof(cur_date), "%04d-%02d-%02d", cy, cm, cd);
+
+                    // Check for duplicate
+                    ScheduleNode *dup = head;
+                    int is_dup = 0;
+                    while (dup) {
+                        if (strcmp(dup->data.doctor_id, doctor_id) == 0 &&
+                            strcmp(dup->data.work_date, cur_date) == 0 &&
+                            strcmp(dup->data.time_slot, time_slot) == 0) {
+                            is_dup = 1;
+                            break;
+                        }
+                        dup = dup->next;
+                    }
+
+                    if (!is_dup) {
+                        memset(&schedule, 0, sizeof(schedule));
+                        generate_id(schedule.schedule_id, MAX_ID, "SC");
+                        strcpy(schedule.doctor_id, doctor_id);
+                        strcpy(schedule.work_date, cur_date);
+                        strcpy(schedule.time_slot, time_slot);
+                        schedule.max_appt = 6;
+                        schedule.max_onsite = 8;
+                        strcpy(schedule.status, "正常");
+
+                        new_node = create_schedule_node(&schedule);
+                        if (new_node) {
+                            if (!head) {
+                                head = new_node;
+                            } else {
+                                ScheduleNode *tail = head;
+                                while (tail->next) tail = tail->next;
+                                tail->next = new_node;
+                            }
+                            created++;
+                        }
+                    }
+
+                    // Advance one day
+                    cd++;
+                    int days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+                    int leap = (cm == 2 && ((cy % 4 == 0 && cy % 100 != 0) || cy % 400 == 0));
+                    int maxd = days_in_month[cm] + (leap ? 1 : 0);
+                    if (cd > maxd) { cd = 1; cm++; }
+                    if (cm > 12) { cm = 1; cy++; }
+                }
+
+                save_schedules_list(head);
+                free_schedule_list(head);
+                {
+                    char detail[60];
+                    snprintf(detail, sizeof(detail), "%s %s~%s %s %d条", doctor_id, start_date, end_date, time_slot, created);
+                    append_log(current_user->username, "create", "schedule", "batch", detail);
+                }
+                printf("批量排班完成，共创建 %d 条排班记录。\n", created);
+            }
+            return SUCCESS;
+
+        case 4: {
+            head = load_schedules_list();
+            int sc = count_schedule_list(head);
+            if (sc == 0) { ui_warn("暂无排班数据。"); free_schedule_list(head); return SUCCESS; }
+
+            const char **si = malloc(sc * sizeof(const char *));
+            char (*sb)[100] = malloc(sc * sizeof(*sb));
+            int si_idx = 0;
+            ScheduleNode *scu = head;
+            while (scu) {
+                snprintf(sb[si_idx], 100, "%s - %s %s %s", scu->data.schedule_id,
+                         scu->data.doctor_id, scu->data.work_date, scu->data.time_slot);
+                si[si_idx] = sb[si_idx]; si_idx++; scu = scu->next;
+            }
+
+            int sel = ui_search_list("选择要修改的排班", si, sc);
+            free((void*)si); free(sb);
+            if (sel < 0) { free_schedule_list(head); return SUCCESS; }
+
+            current = head;
+            for (int j = 0; j < sel; j++) current = current->next;
+
+            ui_sub_header("修改排班");
+            printf(" 当前日期: %s\n", current->data.work_date);
+            printf(" 当前时段: %s\n", current->data.time_slot);
+
+            printf("新预约上限(当前%d, -1不改): ", current->data.max_appt);
+            {
+                int v;
+                if (scanf("%d", &v) == 1 && v >= 0) current->data.max_appt = v;
+                clear_input_buffer();
+            }
+            printf("新现场上限(当前%d, -1不改): ", current->data.max_onsite);
+            {
+                int v;
+                if (scanf("%d", &v) == 1 && v >= 0) current->data.max_onsite = v;
+                clear_input_buffer();
+            }
+
+            save_schedules_list(head);
+            free_schedule_list(head);
+            printf("排班修改成功!\n");
+            return SUCCESS;
+        }
+
+        case 5: {
+            head = load_schedules_list();
+            int sc = count_schedule_list(head);
+            if (sc == 0) { ui_warn("暂无排班数据。"); free_schedule_list(head); return SUCCESS; }
+
+            const char **si = malloc(sc * sizeof(const char *));
+            char (*sb)[100] = malloc(sc * sizeof(*sb));
+            int si_idx = 0;
+            ScheduleNode *scu = head;
+            while (scu) {
+                snprintf(sb[si_idx], 100, "%s - %s %s %s", scu->data.schedule_id,
+                         scu->data.doctor_id, scu->data.work_date, scu->data.time_slot);
+                si[si_idx] = sb[si_idx]; si_idx++; scu = scu->next;
+            }
+
+            int sel = ui_search_list("选择要删除的排班", si, sc);
+            free((void*)si); free(sb);
+            if (sel < 0) { free_schedule_list(head); return SUCCESS; }
+
+            current = head;
+            prev = NULL;
+            for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
+
+            if (!ui_confirm("确认删除该排班?")) { free_schedule_list(head); return SUCCESS; }
+
+            if (!prev) head = current->next;
+            else prev->next = current->next;
+            append_log(current_user->username, "delete", "schedule", current->data.schedule_id,
+                       current->data.doctor_id);
+            free(current);
+            save_schedules_list(head);
+            free_schedule_list(head);
+            printf("排班已删除!\n");
+            return SUCCESS;
+        }
+
+        case 6: {
+            head = load_schedules_list();
+            int sc = count_schedule_list(head);
+            if (sc == 0) { ui_warn("暂无排班数据。"); free_schedule_list(head); return SUCCESS; }
+
+            const char **si = malloc(sc * sizeof(const char *));
+            char (*sb)[100] = malloc(sc * sizeof(*sb));
+            int si_idx = 0;
+            ScheduleNode *scu = head;
+            while (scu) {
+                snprintf(sb[si_idx], 100, "%s - %s %s %s [%s]", scu->data.schedule_id,
+                         scu->data.doctor_id, scu->data.work_date, scu->data.time_slot,
+                         scu->data.status);
+                si[si_idx] = sb[si_idx]; si_idx++; scu = scu->next;
+            }
+
+            int sel = ui_search_list("选择要切换状态的排班", si, sc);
+            free((void*)si); free(sb);
+            if (sel < 0) { free_schedule_list(head); return SUCCESS; }
+
+            current = head;
+            for (int j = 0; j < sel; j++) current = current->next;
+
+            if (strcmp(current->data.status, "正常") == 0) {
+                if (ui_confirm("确认停诊该排班?")) {
+                    strcpy(current->data.status, "停诊");
+                } else {
+                    free_schedule_list(head);
+                    return SUCCESS;
+                }
+            } else {
+                strcpy(current->data.status, "正常");
+                printf("已恢复出诊。\n");
+            }
+
+            save_schedules_list(head);
+            free_schedule_list(head);
+            {
+                char detail[60];
+                snprintf(detail, sizeof(detail), "%s %s -> %s", current->data.schedule_id, current->data.doctor_id, current->data.status);
+                append_log(current_user->username, "update", "schedule", current->data.schedule_id, detail);
+            }
+            printf("排班状态已更新!\n");
+            return SUCCESS;
+        }
+
+        default:
+            return ERROR_INVALID_INPUT;
+    }
+}
+
+// ======================= 操作日志 =======================
+
+int admin_log_menu(const User *current_user) {
+    (void)current_user;
+    LogEntryNode *head = load_logs_list();
+    int count = count_log_entry_list(head);
+
+    ui_header("操作日志");
+
+    if (count == 0) {
+        ui_warn("暂无日志记录。");
+        free_log_entry_list(head);
+        return SUCCESS;
+    }
+
+    const char **items = malloc(count * sizeof(const char *));
+    char (*buf)[180] = malloc(count * sizeof(*buf));
+
+    int i = 0;
+    LogEntryNode *cur = head;
+    while (cur) {
+        snprintf(buf[i], 180, "%-18s %-12s %-8s %-10s %-8s %s",
+                 cur->data.create_time,
+                 cur->data.operator_name,
+                 cur->data.action,
+                 cur->data.target,
+                 cur->data.target_id,
+                 cur->data.detail);
+        items[i] = buf[i];
+        i++; cur = cur->next;
+    }
+
+    ui_search_list("操作日志(输入搜索, Esc返回)", items, count);
+
+    free((void*)items);
+    free(buf);
+    free_log_entry_list(head);
+    return SUCCESS;
+}
+
+// ======================= 数据管理 =======================
+
+int admin_data_menu(const User *current_user) {
+    (void)current_user;
+    int choice;
+
+    ui_header("数据管理");
+    printf("1. 备份数据\n");
+    printf("2. 还原数据\n");
+    printf("0. 返回\n");
+
+    choice = get_menu_choice(0, 2);
+    switch (choice) {
+        case 0:
+            return SUCCESS;
+        case 1:
+            if (!ui_confirm("确认备份当前所有数据?")) return SUCCESS;
+            backup_data();
+            append_log(current_user->username, "create", "backup", "system", "数据备份");
+            return SUCCESS;
+        case 2: {
+            const char **backups = NULL;
+            int backup_count = 0;
+            list_backups(&backups, &backup_count);
+
+            if (backup_count == 0) {
+                ui_warn("暂无备份数据。");
+                return SUCCESS;
+            }
+
+            int sel = ui_search_list("选择要还原的备份", backups, backup_count);
+            if (sel < 0) { free_backups_list(backups, backup_count); return SUCCESS; }
+
+            if (!ui_confirm("还原将覆盖当前所有数据，确认继续?")) {
+                free_backups_list(backups, backup_count);
+                return SUCCESS;
+            }
+
+            restore_data(backups[sel]);
+            append_log(current_user->username, "update", "restore", "system", backups[sel]);
+            free_backups_list(backups, backup_count);
+            return SUCCESS;
+        }
+        default:
+            return ERROR_INVALID_INPUT;
+    }
+}

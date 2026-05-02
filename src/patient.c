@@ -221,18 +221,19 @@ static int patient_standard_register_menu(const User *current_user) {
         return result;
     }
 
-    // Step 3: 显示该科室下医生及其剩余预约号 (paginated)
-    ui_sub_header("可选医生");
+    // Step 3: 显示该科室下当天有排班的医生及其剩余预约号 (paginated)
+    ui_sub_header("可选医生 (当日有排班)");
     ui_info("日期", selected_date);
     printf("\n");
 
     dept_doctors = load_doctors_list();
     {
-        // first pass: count & compute
+        // first pass: count & compute (only doctors with schedule on selected date)
         int match = 0;
         DoctorNode *dd = dept_doctors;
         while (dd) {
-            if (strcmp(dd->data.department_id, department_id) == 0) match++;
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, selected_date)) match++;
             dd = dd->next;
         }
         if (match > 0) {
@@ -241,7 +242,8 @@ static int patient_standard_register_menu(const User *current_user) {
             int idx = 0;
             dd = dept_doctors;
             while (dd && idx < match) {
-                if (strcmp(dd->data.department_id, department_id) == 0) {
+                if (strcmp(dd->data.department_id, department_id) == 0 &&
+                    has_doctor_schedule(dd->data.doctor_id, selected_date)) {
                     int mc = count_appointments_for_slot(dd->data.doctor_id, selected_date, "上午");
                     int ac = count_appointments_for_slot(dd->data.doctor_id, selected_date, "下午");
                     int mr = APPOINTMENT_SLOTS_PER_HALF_DAY - mc; if (mr < 0) mr = 0;
@@ -254,25 +256,26 @@ static int patient_standard_register_menu(const User *current_user) {
                 }
                 dd = dd->next;
             }
-            ui_paginate(di, match, 15, "可选医生");
+            ui_paginate(di, match, 15, "可选医生 (有排班)");
             free((void*)di); free(db);
         }
     }
     free_doctor_list(dept_doctors);
 
     if (!has_doctors) {
-        ui_warn("该科室暂无医生。");
+        ui_warn("该科室在所选日期暂无出诊医生。");
         return ERROR_NOT_FOUND;
     }
 
-    // Step 4: 选择医生 (by search)
+    // Step 4: 选择医生 (by search, only with schedule)
     {
         int match = 0;
         DoctorNode *dd;
         dept_doctors = load_doctors_list();
         dd = dept_doctors;
         while (dd) {
-            if (strcmp(dd->data.department_id, department_id) == 0) match++;
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, selected_date)) match++;
             dd = dd->next;
         }
         if (match == 0) { free_doctor_list(dept_doctors); return ERROR_NOT_FOUND; }
@@ -282,7 +285,8 @@ static int patient_standard_register_menu(const User *current_user) {
         int idx = 0;
         dd = dept_doctors;
         while (dd && idx < match) {
-            if (strcmp(dd->data.department_id, department_id) == 0) {
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, selected_date)) {
                 snprintf(db[idx], 80, "%s - %s (%s)", dd->data.doctor_id, dd->data.name,
                          dd->data.title[0] ? dd->data.title : "医生");
                 di[idx] = db[idx]; idx++;
@@ -294,7 +298,21 @@ static int patient_standard_register_menu(const User *current_user) {
         if (sel < 0) { free_doctor_list(dept_doctors); return ERROR_INVALID_INPUT; }
 
         dd = dept_doctors;
-        for (int j = 0; j < sel; j++) dd = dd->next;
+        for (int j = 0; j < sel; j++) {
+            while (dd && !(strcmp(dd->data.department_id, department_id) == 0 &&
+                   has_doctor_schedule(dd->data.doctor_id, selected_date))) dd = dd->next;
+            if (dd) dd = dd->next;
+        }
+        // Go back to the selected one
+        dd = dept_doctors;
+        for (int j = 0; j <= sel; ) {
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, selected_date)) {
+                if (j == sel) break;
+                j++;
+            }
+            dd = dd->next;
+        }
         selected_doc = dd->data;
         free_doctor_list(dept_doctors);
     }
@@ -410,15 +428,24 @@ static int patient_onsite_register_menu(const User *current_user) {
         return result;
     }
 
-    // Step 2: 显示该科室下医生及其剩余现场号 (paginated)
-    ui_sub_header("今日值班医生");
+    // Get today's date for schedule checking
+    char today_str[12];
+    {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        strftime(today_str, sizeof(today_str), "%Y-%m-%d", tm_info);
+    }
+
+    // Step 2: 显示该科室下今日有排班的医生及其剩余现场号 (paginated)
+    ui_sub_header("今日值班医生 (有排班)");
 
     dept_doctors = load_doctors_list();
     {
         int match = 0;
         DoctorNode *dd = dept_doctors;
         while (dd) {
-            if (strcmp(dd->data.department_id, department_id) == 0) match++;
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, today_str)) match++;
             dd = dd->next;
         }
         if (match > 0) {
@@ -427,7 +454,8 @@ static int patient_onsite_register_menu(const User *current_user) {
             int idx = 0;
             dd = dept_doctors;
             while (dd && idx < match) {
-                if (strcmp(dd->data.department_id, department_id) == 0) {
+                if (strcmp(dd->data.department_id, department_id) == 0 &&
+                    has_doctor_schedule(dd->data.doctor_id, today_str)) {
                     int oc = count_onsite_today(dd->data.doctor_id);
                     int or_ = ONSITE_SLOTS_PER_DAY - oc;
                     if (or_ < 0) or_ = 0;
@@ -439,25 +467,26 @@ static int patient_onsite_register_menu(const User *current_user) {
                 }
                 dd = dd->next;
             }
-            ui_paginate(di, match, 15, "今日值班医生");
+            ui_paginate(di, match, 15, "今日值班医生 (有排班)");
             free((void*)di); free(db);
         }
     }
     free_doctor_list(dept_doctors);
 
     if (!has_doctors) {
-        ui_warn("该科室今日无值班医生。");
+        ui_warn("该科室今日无出诊医生。");
         return ERROR_NOT_FOUND;
     }
 
-    // Step 3: 选择医生 (by search)
+    // Step 3: 选择医生 (by search, only with schedule)
     {
         int match = 0;
         DoctorNode *dd;
         dept_doctors = load_doctors_list();
         dd = dept_doctors;
         while (dd) {
-            if (strcmp(dd->data.department_id, department_id) == 0) match++;
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, today_str)) match++;
             dd = dd->next;
         }
         if (match == 0) { free_doctor_list(dept_doctors); return ERROR_NOT_FOUND; }
@@ -467,7 +496,8 @@ static int patient_onsite_register_menu(const User *current_user) {
         int idx = 0;
         dd = dept_doctors;
         while (dd && idx < match) {
-            if (strcmp(dd->data.department_id, department_id) == 0) {
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, today_str)) {
                 snprintf(db[idx], 80, "%s - %s (%s)", dd->data.doctor_id, dd->data.name,
                          dd->data.title[0] ? dd->data.title : "医生");
                 di[idx] = db[idx]; idx++;
@@ -479,7 +509,14 @@ static int patient_onsite_register_menu(const User *current_user) {
         if (sel < 0) { free_doctor_list(dept_doctors); return ERROR_INVALID_INPUT; }
 
         dd = dept_doctors;
-        for (int j = 0; j < sel; j++) dd = dd->next;
+        for (int j = 0; j <= sel; ) {
+            if (strcmp(dd->data.department_id, department_id) == 0 &&
+                has_doctor_schedule(dd->data.doctor_id, today_str)) {
+                if (j == sel) break;
+                j++;
+            }
+            dd = dd->next;
+        }
         selected_doc = dd->data;
         free_doctor_list(dept_doctors);
     }
@@ -504,7 +541,7 @@ static int patient_onsite_register_menu(const User *current_user) {
     get_current_time(registration.create_time, 30);
 
     queue = load_onsite_registration_queue();
-    result = enqueue_onsite_registration(&queue, &registration);
+    result = enqueue_onsite_registration(&queue, &registration, current_patient.is_emergency);
     if (result != SUCCESS) {
         free_onsite_registration_queue(&queue);
         ui_err("现场挂号入队失败!");
@@ -720,7 +757,7 @@ int patient_appointment_menu(const User *current_user) {
         }
     }
 
-    // ----- 现场挂号记录 (paginated) -----
+    // ----- 现场挂号记录 (paginated) with queue position -----
     {
         int match = 0;
         OnsiteRegistrationNode *on = onsite_queue.front;
@@ -730,7 +767,7 @@ int patient_appointment_menu(const User *current_user) {
         }
         if (match > 0) {
             const char **oi = malloc(match * sizeof(const char *));
-            char (*ob)[80] = malloc(match * sizeof(*ob));
+            char (*ob)[110] = malloc(match * sizeof(*ob));
             int idx = 0;
             on = onsite_queue.front;
             while (on && idx < match) {
@@ -740,8 +777,26 @@ int patient_appointment_menu(const User *current_user) {
                     print_doctor_name_by_id(on->data.doctor_id, dn, sizeof(dn));
                     snprintf(qno, sizeof(qno), "%d", on->data.queue_number);
                     const char *act = (strcmp(on->data.status, "排队中") == 0) ? " [可退号]" : " -";
-                    snprintf(ob[idx], 80, "%-16s %-12s %-10s %-10s%s",
-                             on->data.onsite_id, dn, qno, on->data.status, act);
+
+                    // Calculate queue position: how many pending before this patient
+                    char pos_str[20] = "";
+                    if (strcmp(on->data.status, "排队中") == 0) {
+                        int ahead = 0;
+                        OnsiteRegistrationNode *tmp = onsite_queue.front;
+                        while (tmp) {
+                            if (strcmp(tmp->data.doctor_id, on->data.doctor_id) == 0 &&
+                                strcmp(tmp->data.department_id, on->data.department_id) == 0 &&
+                                strcmp(tmp->data.status, "排队中") == 0 &&
+                                tmp->data.queue_number < on->data.queue_number) {
+                                ahead++;
+                            }
+                            tmp = tmp->next;
+                        }
+                        snprintf(pos_str, sizeof(pos_str), "前面%d人", ahead);
+                    }
+
+                    snprintf(ob[idx], 110, "%-16s %-12s %-10s %-10s %-8s%s",
+                             on->data.onsite_id, dn, qno, on->data.status, pos_str, act);
                     oi[idx] = ob[idx]; idx++; found++;
                 }
                 on = on->next;

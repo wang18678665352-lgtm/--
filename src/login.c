@@ -128,52 +128,49 @@ int register_user(User *new_user) {
             strcpy(doctor_name, username);
         }
 
-        printf(S_LABEL "  请输入职称(如主任医师): " C_RESET);
-        if (fgets(doctor_title, sizeof(doctor_title), stdin) == NULL) {
-            doctor_title[0] = '\0';
+        // 职称选择
+        const char *title_options[] = {
+            "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
+            "主任药师", "副主任药师", "主管药师", "药师",
+            "主任护师", "副主任护师", "主管护师", "护师", "护士",
+            "教授", "副教授", "研究员", "副研究员"
+        };
+        int title_count = sizeof(title_options) / sizeof(title_options[0]);
+        int title_sel = ui_select_list("选择职称（↑↓切换, 回车确认）", title_options, title_count);
+        if (title_sel >= 0) {
+            strcpy(doctor_title, title_options[title_sel]);
         } else {
-            doctor_title[strcspn(doctor_title, "\n")] = 0;
-        }
-        if (doctor_title[0] == '\0') {
             strcpy(doctor_title, "医生");
         }
 
-        printf("\n");
+        // 科室选择
+        doctor_dept[0] = '\0';
         DepartmentNode *dept_head = load_departments_list();
         if (dept_head) {
-            ui_menu_item(1, "选择科室");
-            ui_menu_item(2, "暂不选择");
-            int dept_choice = get_menu_choice(1, 2);
-            if (dept_choice == 1) {
-                int dc = count_department_list(dept_head);
-                if (dc > 0) {
-                    const char **di = malloc(dc * sizeof(const char *));
-                    char (*db)[70] = malloc(dc * sizeof(*db));
-                    int idx = 0;
-                    DepartmentNode *dp = dept_head;
-                    while (dp) {
-                        snprintf(db[idx], 70, "%s - %s", dp->data.department_id, dp->data.name);
-                        di[idx] = db[idx]; idx++; dp = dp->next;
-                    }
-                    int sel = ui_search_list("选择科室", di, dc);
-                    free((void*)di); free(db);
-                    if (sel >= 0) {
-                        dp = dept_head;
-                        for (int j = 0; j < sel; j++) dp = dp->next;
-                        strcpy(doctor_dept, dp->data.department_id);
-                    } else {
-                        doctor_dept[0] = '\0';
-                    }
-                } else {
-                    ui_warn("暂无科室数据，请联系管理员添加。");
-                    doctor_dept[0] = '\0';
+            int dc = count_department_list(dept_head);
+            if (dc > 0) {
+                const char **di = malloc(dc * sizeof(const char *));
+                char (*db)[70] = malloc(dc * sizeof(*db));
+                int idx = 0;
+                DepartmentNode *dp = dept_head;
+                while (dp) {
+                    snprintf(db[idx], 70, "%s - %s", dp->data.department_id, dp->data.name);
+                    di[idx] = db[idx]; idx++; dp = dp->next;
                 }
+                int sel = ui_select_list("选择科室（↑↓切换, 回车确认）", (const char **)di, dc);
+                if (sel >= 0) {
+                    dp = dept_head;
+                    for (int j = 0; j < sel; j++) dp = dp->next;
+                    strcpy(doctor_dept, dp->data.department_id);
+                } else {
+                    ui_warn("未选择科室，可在管理员系统中修改。");
+                }
+                free((void*)di); free(db);
             } else {
-                doctor_dept[0] = '\0';
+                ui_warn("暂无科室数据，请联系管理员添加。");
             }
         } else {
             ui_warn("暂无科室数据，请联系管理员添加。");
-            doctor_dept[0] = '\0';
         }
         free_department_list(dept_head);
 
