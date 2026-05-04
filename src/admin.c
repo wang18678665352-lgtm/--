@@ -167,7 +167,11 @@ void admin_main_menu(const User *current_user) {
     ui_menu_item(3, "患者管理");
     ui_menu_item(4, "药物管理");
     ui_menu_item(5, "病房管理");
-    ui_menu_item(6, "报表管理");
+    ui_menu_item(6, "排班管理");
+    ui_menu_item(7, "分析报表");
+    ui_menu_item(8, "操作日志");
+    ui_menu_item(9, "数据管理");
+    ui_menu_item(10, "修改密码");
 }
 
 int admin_department_menu(const User *current_user) {
@@ -1236,5 +1240,164 @@ int admin_report_menu(const User *current_user) {
     free_prescription_list(prescription_head);
     free_ward_call_list(call_head);
     free_onsite_registration_queue(&onsite_queue);
+    return SUCCESS;
+}
+
+/* ─── 排班管理 ─────────────────────────────────────────────────────── */
+
+int admin_schedule_menu(const User *current_user) {
+    (void)current_user;
+    int choice;
+    ScheduleNode *head, *cur, *prev, *node;
+    Schedule sched;
+    char id[MAX_ID], doc_id[MAX_ID], date[12], slot[10];
+
+    ui_header("排班管理");
+    printf("1. 查看排班\n");
+    printf("2. 新增排班\n");
+    printf("3. 停诊\n");
+    printf("0. 返回\n");
+    choice = get_menu_choice(0, 3);
+    switch (choice) {
+    case 0: return SUCCESS;
+    case 1:
+        head = load_schedules_list();
+        printf("\n%zu 条排班记录\n", count_schedule_list(head));
+        for (cur = head; cur; cur = cur->next)
+            printf("  %s | %s | %s | %s | %s\n",
+                   cur->data.schedule_id, cur->data.doctor_id,
+                   cur->data.work_date, cur->data.time_slot, cur->data.status);
+        free_schedule_list(head);
+        return SUCCESS;
+    case 2:
+        printf("医生ID: "); if (!fgets(doc_id, sizeof(doc_id), stdin)) return ERROR_INVALID_INPUT;
+        doc_id[strcspn(doc_id, "\n")] = 0;
+        printf("日期(YYYY-MM-DD): "); if (!fgets(date, sizeof(date), stdin)) return ERROR_INVALID_INPUT;
+        date[strcspn(date, "\n")] = 0;
+        printf("时段(上午/下午): "); if (!fgets(slot, sizeof(slot), stdin)) return ERROR_INVALID_INPUT;
+        slot[strcspn(slot, "\n")] = 0;
+        generate_id(id, sizeof(id), "SCH");
+        memset(&sched, 0, sizeof(sched));
+        strcpy(sched.schedule_id, id);
+        strcpy(sched.doctor_id, doc_id);
+        strcpy(sched.work_date, date);
+        strcpy(sched.time_slot, slot);
+        strcpy(sched.status, "正常");
+        sched.max_appt = 20;
+        sched.max_onsite = 10;
+        head = load_schedules_list();
+        node = create_schedule_node(&sched);
+        node->next = head;
+        save_schedules_list(node);
+        free_schedule_list(node);
+        printf("排班 %s 创建成功\n", id);
+        return SUCCESS;
+    case 3:
+        head = load_schedules_list();
+        printf("排班ID: "); if (!fgets(id, sizeof(id), stdin)) { free_schedule_list(head); return ERROR_INVALID_INPUT; }
+        id[strcspn(id, "\n")] = 0;
+        for (cur = head; cur; cur = cur->next) {
+            if (strcmp(cur->data.schedule_id, id) == 0) {
+                strcpy(cur->data.status, "停诊");
+                save_schedules_list(head);
+                free_schedule_list(head);
+                printf("排班 %s 已停诊\n", id);
+                return SUCCESS;
+            }
+        }
+        free_schedule_list(head);
+        ui_err("未找到该排班");
+        return ERROR_NOT_FOUND;
+    }
+    return SUCCESS;
+}
+
+/* ─── 操作日志 ─────────────────────────────────────────────────────── */
+
+int admin_log_menu(const User *current_user) {
+    (void)current_user;
+    LogEntryNode *logs = load_logs_list();
+    if (!logs) {
+        ui_header("操作日志");
+        printf("暂无日志记录\n");
+        return SUCCESS;
+    }
+    int total = count_log_entry_list(logs);
+    ui_header("操作日志");
+    printf("共 %d 条日志记录\n\n", total);
+    LogEntryNode *cur = logs;
+    while (cur) {
+        printf("  [%s] %s | %s %s %s | %s\n",
+               cur->data.create_time, cur->data.operator_name,
+               cur->data.action, cur->data.target,
+               cur->data.target_id, cur->data.detail);
+        cur = cur->next;
+    }
+    free_log_entry_list(logs);
+    return SUCCESS;
+}
+
+/* ─── 数据管理 ─────────────────────────────────────────────────────── */
+
+int admin_data_menu(const User *current_user) {
+    (void)current_user;
+    int choice;
+    char dir_name[64];
+
+    ui_header("数据管理");
+    printf("1. 备份数据\n");
+    printf("2. 恢复数据\n");
+    printf("3. 查看备份列表\n");
+    printf("0. 返回\n");
+    choice = get_menu_choice(0, 3);
+    switch (choice) {
+    case 0: return SUCCESS;
+    case 1:
+        if (backup_data() >= 0) {
+            append_log(current_user->username, "备份", "数据", "all", "手动数据备份");
+            printf("数据备份完成!\n");
+        } else {
+            ui_err("备份失败");
+        }
+        return SUCCESS;
+    case 2: {
+        const char **names = NULL;
+        int count = 0;
+        list_backups(&names, &count);
+        if (count == 0) {
+            printf("没有找到备份\n");
+            return SUCCESS;
+        }
+        printf("可用备份:\n");
+        for (int i = 0; i < count; i++) printf("  %s\n", names[i]);
+        printf("输入备份目录名: ");
+        if (!fgets(dir_name, sizeof(dir_name), stdin)) {
+            free_backups_list(names, count);
+            return ERROR_INVALID_INPUT;
+        }
+        dir_name[strcspn(dir_name, "\n")] = 0;
+        if (restore_data(dir_name) >= 0) {
+            append_log(current_user->username, "恢复", "数据", "all", "数据恢复");
+            printf("数据恢复完成!\n");
+        } else {
+            ui_err("恢复失败，请检查目录名");
+        }
+        free_backups_list(names, count);
+        return SUCCESS;
+    }
+    case 3: {
+        const char **names = NULL;
+        int count = 0;
+        list_backups(&names, &count);
+        if (count == 0) {
+            printf("暂无备份\n");
+            return SUCCESS;
+        }
+        printf("备份列表 (%d):\n", count);
+        for (int i = 0; i < count; i++) printf("  %s\n", names[i]);
+        free_backups_list(names, count);
+        return SUCCESS;
+    }
+    }
     return SUCCESS;
 }

@@ -300,8 +300,8 @@ void run_admin_menu(const User *user) {
             case 3: admin_patient_menu(user); break;
             case 4: admin_drug_menu(user); break;
             case 5: admin_ward_menu(user); break;
-            case 6: admin_analysis_menu(user); break;
-            case 7: admin_schedule_menu(user); break;
+            case 6: admin_schedule_menu(user); break;
+            case 7: admin_analysis_menu(user); break;
             case 8: admin_log_menu(user); break;
             case 9: admin_data_menu(user); break;
             case 10: admin_reset_password(user); break;
