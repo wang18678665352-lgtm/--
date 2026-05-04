@@ -196,6 +196,24 @@ static int doctor_has_schedule(const char *docId, const char *date, const char *
     return found;
 }
 
+/* ─── 日期输入框子类化，只允许数字和连字符 ──────────────────────────── */
+
+static WNDPROC g_oldDateEditProc = NULL;
+
+static LRESULT CALLBACK DateEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_CHAR) {
+        if ((wParam >= '0' && wParam <= '9') || wParam == '-' || wParam == VK_BACK)
+            return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
+        /* 允许 Ctrl+A/C/V/X/Z */
+        if (wParam == 0x01 || wParam == 0x03 || wParam == 0x16 ||
+            wParam == 0x18 || wParam == 0x1A)
+            return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
+        MessageBeep(0);
+        return 0;
+    }
+    return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
+}
+
 /* ─── 挂号对话框 ──────────────────────────────────────────────────── */
 
 #define IDC_REG_DEPT    3101
@@ -246,9 +264,10 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 
         CreateWindowA("STATIC", "日期:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
-        CreateWindowA("EDIT", "",
+        HWND hDateEdit = CreateWindowA("EDIT", "",
             WS_VISIBLE|WS_CHILD|WS_BORDER|ES_AUTOHSCROLL,
             110, y, 150, 22, hDlg, (HMENU)IDC_REG_DATE, g_hInst, NULL);
+        g_oldDateEditProc = (WNDPROC)SetWindowLongPtrA(hDateEdit, GWLP_WNDPROC, (LONG_PTR)DateEditSubclassProc);
 
         CreateWindowA("STATIC", "格式 YYYY-MM-DD", WS_VISIBLE|WS_CHILD,
             270, y+2, 120, 20, hDlg, NULL, g_hInst, NULL);
