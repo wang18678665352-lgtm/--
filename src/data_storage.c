@@ -2230,7 +2230,6 @@ void free_backups_list(const char **names, int count) {
 }
 
 int restore_data(const char *backup_dir) {
-    char full_path[256];
     int success_count = 0;
 
     for (int i = 0; i < backup_file_count; i++) {

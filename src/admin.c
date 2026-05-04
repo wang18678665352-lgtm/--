@@ -1248,7 +1248,7 @@ int admin_report_menu(const User *current_user) {
 int admin_schedule_menu(const User *current_user) {
     (void)current_user;
     int choice;
-    ScheduleNode *head, *cur, *prev, *node;
+    ScheduleNode *head, *cur, *node;
     Schedule sched;
     char id[MAX_ID], doc_id[MAX_ID], date[12], slot[10];
 
@@ -1262,7 +1262,7 @@ int admin_schedule_menu(const User *current_user) {
     case 0: return SUCCESS;
     case 1:
         head = load_schedules_list();
-        printf("\n%zu 条排班记录\n", count_schedule_list(head));
+        printf("\n%d 条排班记录\n", count_schedule_list(head));
         for (cur = head; cur; cur = cur->next)
             printf("  %s | %s | %s | %s | %s\n",
                    cur->data.schedule_id, cur->data.doctor_id,

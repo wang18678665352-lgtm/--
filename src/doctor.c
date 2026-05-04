@@ -213,9 +213,7 @@ static int upsert_medical_record(const Doctor *doctor, const char *patient_id, c
 
 static void show_current_doctor_registrations(const Doctor *doctor) {
     AppointmentNode *appointment_head = load_appointments_list();
-    AppointmentNode *current_appointment = appointment_head;
     OnsiteRegistrationQueue onsite_queue = load_onsite_registration_queue();
-    OnsiteRegistrationNode *current_onsite = onsite_queue.front;
     int found_appt = 0;
     int found_onsite = 0;
 
@@ -245,7 +243,6 @@ static void show_current_doctor_registrations(const Doctor *doctor) {
     }
 
     { // paginated: 预约挂号
-        int ac = count_appointment_list(appointment_head);
         // first pass: count matching
         int match = 0;
         AppointmentNode *ap = appointment_head;
@@ -580,7 +577,6 @@ int doctor_prescribe_menu(const User *current_user) {
 
     record_head = load_medical_records_list();
     {
-        int rc = count_medical_record_list(record_head);
         MedicalRecordNode *mr = record_head;
         // first pass: count matching
         int match = 0;
@@ -864,8 +860,6 @@ int doctor_prescribe_menu(const User *current_user) {
 int doctor_ward_call_menu(const User *current_user) {
     Doctor *current_doctor = find_doctor_by_username(current_user->username);
     WardCallNode *call_head = NULL;
-    WardCallNode *current_call = NULL;
-    char call_id[MAX_ID];
     int found = 0;
 
     if (!current_doctor) {

@@ -329,7 +329,7 @@ int change_password(const User *user) {
 
     int result = save_users_list(head);
     if (result == SUCCESS) {
-        strcpy(user->password, hash_hex);
+        /* password already saved via save_users_list() above */
     }
     free_user_list(head);
 

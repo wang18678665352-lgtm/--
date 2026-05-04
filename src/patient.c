@@ -203,7 +203,6 @@ static int patient_standard_register_menu(const User *current_user) {
     int result;
     char time_slot[10];
     DoctorNode *dept_doctors = NULL;
-    DoctorNode *doc_iter = NULL;
     int has_doctors = 0;
 
     printf("\n");
@@ -415,7 +414,6 @@ static int patient_onsite_register_menu(const User *current_user) {
     OnsiteRegistration registration;
     OnsiteRegistrationQueue queue;
     DoctorNode *dept_doctors = NULL;
-    DoctorNode *doc_iter = NULL;
     int result;
     int has_doctors = 0;
 
@@ -922,7 +920,6 @@ int patient_query_diagnosis_menu(const User *current_user) {
     PatientNode *patient_head = NULL;
     PatientNode *current_patient_node = NULL;
     MedicalRecordNode *record_head = NULL;
-    MedicalRecordNode *current_record = NULL;
     char patient_id_copy[MAX_ID];
     int patient_found = 0;
     int found = 0;
@@ -1062,7 +1059,6 @@ int patient_query_diagnosis_menu(const User *current_user) {
 
 int patient_view_ward_menu(const User *current_user) {
     WardNode *ward_head = NULL;
-    WardNode *current_ward = NULL;
     (void)current_user;
 
     ui_header("住院信息查看");

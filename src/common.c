@@ -246,7 +246,7 @@ void generate_id(char *buffer, int buffer_size, const char *prefix) {
     static int initialized = 0;
 
     if (!initialized) {
-        srand((unsigned int)(now ^ (unsigned int)&counter));
+        srand((unsigned int)(now ^ (unsigned long long)&counter));
         counter = rand() % 7919;  // random offset to reduce restart collision
         initialized = 1;
     }
