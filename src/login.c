@@ -133,7 +133,8 @@ int register_user(User *new_user) {
             "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
             "主任药师", "副主任药师", "主管药师", "药师",
             "主任护师", "副主任护师", "主管护师", "护师", "护士",
-            "教授", "副教授", "研究员", "副研究员"
+            "教授", "副教授", "研究员", "副研究员",
+            "返聘专家", "首席专家", "医学博士", "实习医生", "医师"
         };
         int title_count = sizeof(title_options) / sizeof(title_options[0]);
         int title_sel = ui_select_list("选择职称（↑↓切换, 回车确认）", title_options, title_count);
@@ -261,6 +262,166 @@ bool has_permission(const User *user, const char *required_role) {
     }
     
     return strcmp(user->role, required_role) == 0;
+}
+
+int change_password(const User *user) {
+    char old_password[MAX_PASSWORD];
+    char new_password[MAX_PASSWORD];
+    char confirm_password[MAX_PASSWORD];
+
+    ui_sub_header("修改密码");
+
+    printf(S_LABEL "  请输入原密码: " C_RESET);
+    if (fgets(old_password, MAX_PASSWORD, stdin) == NULL) return ERROR_INVALID_INPUT;
+    old_password[strcspn(old_password, "\n")] = 0;
+
+    uint8_t hash_bytes[SHA256_DIGEST_SIZE];
+    char hash_hex[SHA256_HEX_SIZE];
+    sha256_hash((const uint8_t*)old_password, strlen(old_password), hash_bytes);
+    sha256_hex(hash_bytes, hash_hex);
+
+    if (strcmp(user->password, hash_hex) != 0) {
+        ui_err("原密码错误!");
+        return ERROR_PERMISSION_DENIED;
+    }
+
+    printf(S_LABEL "  请输入新密码: " C_RESET);
+    if (fgets(new_password, MAX_PASSWORD, stdin) == NULL) return ERROR_INVALID_INPUT;
+    new_password[strcspn(new_password, "\n")] = 0;
+
+    if (strlen(new_password) == 0) {
+        ui_err("密码不能为空!");
+        return ERROR_INVALID_INPUT;
+    }
+
+    printf(S_LABEL "  请再次输入新密码: " C_RESET);
+    if (fgets(confirm_password, MAX_PASSWORD, stdin) == NULL) return ERROR_INVALID_INPUT;
+    confirm_password[strcspn(confirm_password, "\n")] = 0;
+
+    if (strcmp(new_password, confirm_password) != 0) {
+        ui_err("两次输入的新密码不一致!");
+        return ERROR_INVALID_INPUT;
+    }
+
+    UserNode *head = load_users_list();
+    if (!head) {
+        ui_err("加载用户数据失败!");
+        return ERROR_FILE_IO;
+    }
+
+    UserNode *current = head;
+    while (current) {
+        if (strcmp(current->data.username, user->username) == 0 &&
+            strcmp(current->data.role, user->role) == 0) {
+            sha256_hash((const uint8_t*)new_password, strlen(new_password), hash_bytes);
+            sha256_hex(hash_bytes, hash_hex);
+            strcpy(current->data.password, hash_hex);
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!current) {
+        free_user_list(head);
+        ui_err("用户数据异常，未找到匹配用户!");
+        return ERROR_NOT_FOUND;
+    }
+
+    int result = save_users_list(head);
+    if (result == SUCCESS) {
+        strcpy(user->password, hash_hex);
+    }
+    free_user_list(head);
+
+    if (result == SUCCESS) {
+        ui_ok("密码修改成功!");
+    } else {
+        ui_err("保存用户数据失败!");
+    }
+    return result;
+}
+
+int admin_reset_password(const User *admin_user) {
+    (void)admin_user;
+    char target_username[MAX_USERNAME];
+
+    ui_header("重置用户密码");
+
+    printf(S_LABEL "  请输入要重置密码的用户名: " C_RESET);
+    if (fgets(target_username, MAX_USERNAME, stdin) == NULL) return ERROR_INVALID_INPUT;
+    target_username[strcspn(target_username, "\n")] = 0;
+
+    if (strlen(target_username) == 0) {
+        ui_err("用户名不能为空!");
+        return ERROR_INVALID_INPUT;
+    }
+
+    UserNode *head = load_users_list();
+    if (!head) {
+        ui_err("加载用户数据失败!");
+        return ERROR_FILE_IO;
+    }
+
+    UserNode *target = NULL;
+    UserNode *current = head;
+    while (current) {
+        if (strcmp(current->data.username, target_username) == 0) {
+            target = current;
+            break;
+        }
+        current = current->next;
+    }
+
+    if (!target) {
+        free_user_list(head);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "未找到用户: %s", target_username);
+        ui_err(buf);
+        return ERROR_NOT_FOUND;
+    }
+
+    char new_password[MAX_PASSWORD];
+    char confirm_password[MAX_PASSWORD];
+
+    printf(S_LABEL "  用户 %s（角色: %s）\n", target_username, target->data.role);
+    printf(S_LABEL "  请输入新密码: " C_RESET);
+    if (fgets(new_password, MAX_PASSWORD, stdin) == NULL) { free_user_list(head); return ERROR_INVALID_INPUT; }
+    new_password[strcspn(new_password, "\n")] = 0;
+
+    if (strlen(new_password) == 0) {
+        free_user_list(head);
+        ui_err("密码不能为空!");
+        return ERROR_INVALID_INPUT;
+    }
+
+    printf(S_LABEL "  请再次输入新密码: " C_RESET);
+    if (fgets(confirm_password, MAX_PASSWORD, stdin) == NULL) { free_user_list(head); return ERROR_INVALID_INPUT; }
+    confirm_password[strcspn(confirm_password, "\n")] = 0;
+
+    if (strcmp(new_password, confirm_password) != 0) {
+        free_user_list(head);
+        ui_err("两次输入的密码不一致!");
+        return ERROR_INVALID_INPUT;
+    }
+
+    uint8_t hash_bytes[SHA256_DIGEST_SIZE];
+    char hash_hex[SHA256_HEX_SIZE];
+    sha256_hash((const uint8_t*)new_password, strlen(new_password), hash_bytes);
+    sha256_hex(hash_bytes, hash_hex);
+    strcpy(target->data.password, hash_hex);
+
+    int result = save_users_list(head);
+    free_user_list(head);
+
+    if (result == SUCCESS) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "用户 %s 的密码已重置!", target_username);
+        ui_ok(buf);
+        append_log(admin_user->username, "重置密码", "用户", target_username, "管理员重置密码");
+    } else {
+        ui_err("保存用户数据失败!");
+    }
+    return result;
 }
 
 int migrate_user_passwords(void) {

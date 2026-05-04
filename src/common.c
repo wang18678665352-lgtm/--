@@ -243,6 +243,13 @@ void generate_id(char *buffer, int buffer_size, const char *prefix) {
     struct tm *tm_info = localtime(&now);
     static time_t last_sec = 0;
     static int counter = 0;
+    static int initialized = 0;
+
+    if (!initialized) {
+        srand((unsigned int)(now ^ (unsigned int)&counter));
+        counter = rand() % 7919;  // random offset to reduce restart collision
+        initialized = 1;
+    }
 
     if (now != last_sec) {
         last_sec = now;

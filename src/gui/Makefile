@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c99
+CFLAGS = -Wall -Wextra -O2 -std=c99 -finput-charset=UTF-8
 LDFLAGS = -mwindows
 LIBS = -lcomctl32 -lcomdlg32 -lgdi32 -lmsimg32
 
@@ -28,7 +28,7 @@ $(OUTPUT): $(GUI_OBJS) $(RES_OBJS)
 	@echo ""
 	@echo "=== Build OK: $(OUTPUT) ==="
 
-gui/gui_main.o: gui/gui_main.c gui/gui_main.h gui/gui_login.h gui/gui_patient.h gui/gui_doctor.h gui/gui_admin.h
+gui/gui_main.o: gui/gui_main.c gui/gui_main.h gui/gui_login.h gui/gui_patient.h gui/gui_doctor.h gui/gui_admin.h gui/gui_dashboard.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 gui/gui_login.o: gui/gui_login.c gui/gui_login.h
@@ -41,6 +41,9 @@ gui/gui_doctor.o: gui/gui_doctor.c gui/gui_doctor.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 gui/gui_admin.o: gui/gui_admin.c gui/gui_admin.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+gui/gui_dashboard.o: gui/gui_dashboard.c gui/gui_dashboard.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(SRC_DIR)/data_storage.o: $(SRC_DIR)/data_storage.c $(SRC_DIR)/data_storage.h

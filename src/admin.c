@@ -112,25 +112,75 @@ static void list_drugs(void) {
         return;
     }
 
-    const char **items = malloc(count * sizeof(const char *));
-    char (*buf)[140] = malloc(count * sizeof(*buf));
-
-    int i = 0;
+    // Collect unique categories
+    char categories[50][20];
+    int cat_count = 0;
     DrugNode *cur = head;
-    while (cur) {
-        snprintf(buf[i], 140, "%-10s %-14s %-8s %8.2f %4d %4d %5.0f%%",
-                 cur->data.drug_id,
-                 cur->data.name,
-                 cur->data.category,
-                 cur->data.price,
-                 cur->data.stock_num,
-                 cur->data.warning_line,
-                 cur->data.reimbursement_ratio * 100);
-        items[i] = buf[i];
-        i++; cur = cur->next;
+    while (cur && cat_count < 50) {
+        if (cur->data.category[0]) {
+            int found = 0;
+            for (int c = 0; c < cat_count; c++) {
+                if (strcmp(categories[c], cur->data.category) == 0) { found = 1; break; }
+            }
+            if (!found) {
+                strncpy(categories[cat_count], cur->data.category, 19);
+                categories[cat_count][19] = '\0';
+                cat_count++;
+            }
+        }
+        cur = cur->next;
     }
 
-    ui_search_list("药品列表(输入搜索, Esc返回)", items, count);
+    const char **cat_items = malloc((cat_count + 1) * sizeof(const char *));
+    cat_items[0] = "全部";
+    for (int c = 0; c < cat_count; c++) cat_items[c + 1] = categories[c];
+
+    printf(C_CYAN "  ┌─ 选择分类 ──────────────────────────┐\n" C_RESET);
+    int cat_sel = ui_select_list("药品分类筛选(↑↓切换, 回车确认)", cat_items, cat_count + 1);
+    free((void*)cat_items);
+
+    char selected_cat[20] = "";
+    if (cat_sel > 0) {
+        strcpy(selected_cat, categories[cat_sel - 1]);
+        printf(C_YELLOW "  ⚠ 当前筛选: %s\n" C_RESET, selected_cat);
+    }
+
+    // Count matching
+    int match = 0;
+    cur = head;
+    while (cur) {
+        if (selected_cat[0] == '\0' || strcmp(cur->data.category, selected_cat) == 0) match++;
+        cur = cur->next;
+    }
+
+    if (match == 0) {
+        ui_warn("该分类下暂无药品。");
+        free_drug_list(head);
+        return;
+    }
+
+    const char **items = malloc(match * sizeof(const char *));
+    char (*buf)[140] = malloc(match * sizeof(*buf));
+
+    int i = 0;
+    cur = head;
+    while (cur && i < match) {
+        if (selected_cat[0] == '\0' || strcmp(cur->data.category, selected_cat) == 0) {
+            snprintf(buf[i], 140, "%-10s %-14s %-8s %8.2f %4d %4d %5.0f%%",
+                     cur->data.drug_id,
+                     cur->data.name,
+                     cur->data.category,
+                     cur->data.price,
+                     cur->data.stock_num,
+                     cur->data.warning_line,
+                     cur->data.reimbursement_ratio * 100);
+            items[i] = buf[i];
+            i++;
+        }
+        cur = cur->next;
+    }
+
+    ui_search_list("药品列表(输入搜索, Esc返回)", items, match);
 
     free((void*)items);
     free(buf);
@@ -181,6 +231,7 @@ void admin_main_menu(const User *current_user) {
     ui_menu_item(7, "分析报表");
     ui_menu_item(8, "操作日志");
     ui_menu_item(9, "数据管理");
+    ui_menu_item(10, "重置密码");
 }
 
 int admin_department_menu(const User *current_user) {
@@ -365,28 +416,37 @@ int admin_department_menu(const User *current_user) {
             prev = NULL;
             for (int j = 0; j < sel; j++) { prev = current; current = current->next; }
 
-            {
-                DoctorNode *doc_head = load_doctors_list();
-                DoctorNode *doc_current = doc_head;
-                int has_doctor = 0;
-                while (doc_current) {
-                    if (strcmp(doc_current->data.department_id, current->data.department_id) == 0) {
-                        has_doctor = 1;
-                        break;
-                    }
-                    doc_current = doc_current->next;
+            DoctorNode *doc_head = load_doctors_list();
+            DoctorNode *doc_current = doc_head;
+            int has_doctor = 0;
+            while (doc_current) {
+                if (strcmp(doc_current->data.department_id, current->data.department_id) == 0) {
+                    has_doctor = 1;
+                    break;
                 }
-                free_doctor_list(doc_head);
-                if (has_doctor) {
-                    printf("该科室下还有医生，无法删除! 请先将医生调离该科室。\n");
-                    free_department_list(head);
-                    return ERROR_PERMISSION_DENIED;
-                }
+                doc_current = doc_current->next;
             }
+            if (has_doctor) {
+                printf(C_YELLOW "  ⚠ 该科室下还有医生，删除后他们将取消科室关联。\n" C_RESET);
+            }
+            free_doctor_list(doc_head);
 
             if (!ui_confirm("确认删除该科室?")) {
                 free_department_list(head);
                 return SUCCESS;
+            }
+
+            if (has_doctor) {
+                doc_head = load_doctors_list();
+                doc_current = doc_head;
+                while (doc_current) {
+                    if (strcmp(doc_current->data.department_id, current->data.department_id) == 0) {
+                        memset(doc_current->data.department_id, 0, sizeof(doc_current->data.department_id));
+                    }
+                    doc_current = doc_current->next;
+                }
+                save_doctors_list(doc_head);
+                free_doctor_list(doc_head);
             }
 
             if (!prev) {
@@ -467,7 +527,8 @@ int admin_doctor_menu(const User *current_user) {
                     "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
                     "主任药师", "副主任药师", "主管药师", "药师",
                     "主任护师", "副主任护师", "主管护师", "护师", "护士",
-                    "教授", "副教授", "研究员", "副研究员"
+                    "教授", "副教授", "研究员", "副研究员",
+                    "返聘专家", "首席专家", "医学博士", "实习医生", "医师"
                 };
                 int title_count = sizeof(title_options) / sizeof(title_options[0]);
                 int title_sel = ui_select_list("选择职称", title_options, title_count);
@@ -571,7 +632,8 @@ int admin_doctor_menu(const User *current_user) {
                     "主任医师", "副主任医师", "主治医师", "住院医师", "医士",
                     "主任药师", "副主任药师", "主管药师", "药师",
                     "主任护师", "副主任护师", "主管护师", "护师", "护士",
-                    "教授", "副教授", "研究员", "副研究员"
+                    "教授", "副教授", "研究员", "副研究员",
+                    "返聘专家", "首席专家", "医学博士", "实习医生", "医师"
                 };
                 int title_count = sizeof(title_options) / sizeof(title_options[0]);
                 printf("当前职称: %s\n", current->data.title);
@@ -701,10 +763,35 @@ int admin_doctor_menu(const User *current_user) {
             } else {
                 prev->next = current->next;
             }
+            char deleted_doctor_id[32];
+            strcpy(deleted_doctor_id, current->data.doctor_id);
             append_log(current_user->username, "delete", "doctor", current->data.doctor_id, current->data.name);
             free(current);
             save_doctors_list(head);
             free_doctor_list(head);
+
+            // Cascade: clean up this doctor's schedules
+            {
+                ScheduleNode *sch_head = load_schedules_list();
+                if (sch_head) {
+                    ScheduleNode *sch_prev = NULL, *sch_cur = sch_head;
+                    while (sch_cur) {
+                        if (strcmp(sch_cur->data.doctor_id, deleted_doctor_id) == 0) {
+                            ScheduleNode *to_del = sch_cur;
+                            if (!sch_prev) sch_head = sch_cur->next;
+                            else sch_prev->next = sch_cur->next;
+                            sch_cur = sch_cur->next;
+                            free(to_del);
+                        } else {
+                            sch_prev = sch_cur;
+                            sch_cur = sch_cur->next;
+                        }
+                    }
+                    save_schedules_list(sch_head);
+                    free_schedule_list(sch_head);
+                }
+            }
+
             printf("医生已删除!\n");
             return SUCCESS;
         }
@@ -981,6 +1068,61 @@ int admin_patient_menu(const User *current_user) {
             if (!ui_confirm("确认删除该患者?")) {
                 free_patient_list(head);
                 return SUCCESS;
+            }
+
+            // Cascade: ask whether to also delete related medical records and prescriptions
+            {
+                MedicalRecordNode *rec_head = load_medical_records_list();
+                MedicalRecordNode *rec_prev = NULL, *rec_cur = rec_head;
+                int has_records = 0;
+                while (rec_cur) {
+                    if (strcmp(rec_cur->data.patient_id, current->data.patient_id) == 0) {
+                        has_records = 1;
+                        break;
+                    }
+                    rec_prev = rec_cur; rec_cur = rec_cur->next;
+                }
+                if (has_records && ui_confirm("该患者有病历和处方记录，是否一并删除?")) {
+                    // Delete medical records and prescriptions for this patient
+                    rec_cur = rec_head;
+                    rec_prev = NULL;
+                    while (rec_cur) {
+                        if (strcmp(rec_cur->data.patient_id, current->data.patient_id) == 0) {
+                            MedicalRecordNode *to_del = rec_cur;
+                            if (!rec_prev) rec_head = rec_cur->next;
+                            else rec_prev->next = rec_cur->next;
+                            rec_cur = rec_cur->next;
+                            free(to_del);
+                        } else {
+                            rec_prev = rec_cur;
+                            rec_cur = rec_cur->next;
+                        }
+                    }
+                    save_medical_records_list(rec_head);
+
+                    PrescriptionNode *pre_head = load_prescriptions_list();
+                    PrescriptionNode *pre_prev = NULL, *pre_cur = pre_head;
+                    while (pre_cur) {
+                        if (strcmp(pre_cur->data.patient_id, current->data.patient_id) == 0) {
+                            PrescriptionNode *to_del = pre_cur;
+                            if (!pre_prev) pre_head = pre_cur->next;
+                            else pre_prev->next = pre_cur->next;
+                            pre_cur = pre_cur->next;
+                            free(to_del);
+                        } else {
+                            pre_prev = pre_cur;
+                            pre_cur = pre_cur->next;
+                        }
+                    }
+                    save_prescriptions_list(pre_head);
+                    free_prescription_list(pre_head);
+                } else if (has_records) {
+                    // User chose to keep records — abort deletion
+                    if (rec_head) free_medical_record_list(rec_head);
+                    free_patient_list(head);
+                    return ERROR_PERMISSION_DENIED;
+                }
+                if (rec_head) free_medical_record_list(rec_head);
             }
 
             if (!prev) {
@@ -2099,12 +2241,65 @@ int admin_schedule_menu(const User *current_user) {
 
 // ======================= 操作日志 =======================
 
+typedef struct {
+    char start_date[20];
+    char end_date[20];
+    char operator_name[MAX_USERNAME];
+    char target[20];
+    int  has_filter;
+} LogFilter;
+
+static int log_match_filter(const LogEntry *entry, const LogFilter *filter) {
+    if (filter->start_date[0] && strcmp(entry->create_time, filter->start_date) < 0)
+        return 0;
+    if (filter->end_date[0] && strncmp(entry->create_time, filter->end_date, strlen(filter->end_date)) > 0)
+        return 0;
+    if (filter->operator_name[0] && strstr(entry->operator_name, filter->operator_name) == NULL)
+        return 0;
+    if (filter->target[0] && strstr(entry->target, filter->target) == NULL)
+        return 0;
+    return 1;
+}
+
 int admin_log_menu(const User *current_user) {
     (void)current_user;
-    LogEntryNode *head = load_logs_list();
-    int count = count_log_entry_list(head);
+    LogFilter filter;
+    memset(&filter, 0, sizeof(filter));
 
     ui_header("操作日志");
+
+    ui_box_top("筛选设置");
+    ui_menu_item(1, "设置筛选条件");
+    ui_menu_item(2, "查看全部（无筛选）");
+    ui_box_bottom();
+
+    int choice = get_menu_choice(1, 2);
+    if (choice == 1) {
+        filter.has_filter = 1;
+
+        printf(S_LABEL "  起始日期 (留空不限, 格式 2024-01-01): " C_RESET);
+        if (fgets(filter.start_date, sizeof(filter.start_date), stdin)) {
+            filter.start_date[strcspn(filter.start_date, "\n")] = 0;
+        }
+
+        printf(S_LABEL "  结束日期 (留空不限): " C_RESET);
+        if (fgets(filter.end_date, sizeof(filter.end_date), stdin)) {
+            filter.end_date[strcspn(filter.end_date, "\n")] = 0;
+        }
+
+        printf(S_LABEL "  操作人 (留空不限): " C_RESET);
+        if (fgets(filter.operator_name, sizeof(filter.operator_name), stdin)) {
+            filter.operator_name[strcspn(filter.operator_name, "\n")] = 0;
+        }
+
+        printf(S_LABEL "  操作目标类型 (留空不限, 如: 患者/医生/药品): " C_RESET);
+        if (fgets(filter.target, sizeof(filter.target), stdin)) {
+            filter.target[strcspn(filter.target, "\n")] = 0;
+        }
+    }
+
+    LogEntryNode *head = load_logs_list();
+    int count = count_log_entry_list(head);
 
     if (count == 0) {
         ui_warn("暂无日志记录。");
@@ -2112,24 +2307,44 @@ int admin_log_menu(const User *current_user) {
         return SUCCESS;
     }
 
-    const char **items = malloc(count * sizeof(const char *));
-    char (*buf)[180] = malloc(count * sizeof(*buf));
+    /* 计算符合筛选条件的条目数 */
+    int match_count = 0;
+    {
+        LogEntryNode *cur = head;
+        while (cur) {
+            if (!filter.has_filter || log_match_filter(&cur->data, &filter))
+                match_count++;
+            cur = cur->next;
+        }
+    }
+
+    if (match_count == 0) {
+        ui_warn("没有符合筛选条件的日志记录。");
+        free_log_entry_list(head);
+        return SUCCESS;
+    }
+
+    const char **items = malloc(match_count * sizeof(const char *));
+    char (*buf)[180] = malloc(match_count * sizeof(*buf));
 
     int i = 0;
     LogEntryNode *cur = head;
     while (cur) {
-        snprintf(buf[i], 180, "%-18s %-12s %-8s %-10s %-8s %s",
-                 cur->data.create_time,
-                 cur->data.operator_name,
-                 cur->data.action,
-                 cur->data.target,
-                 cur->data.target_id,
-                 cur->data.detail);
-        items[i] = buf[i];
-        i++; cur = cur->next;
+        if (!filter.has_filter || log_match_filter(&cur->data, &filter)) {
+            snprintf(buf[i], 180, "%-18s %-12s %-8s %-10s %-8s %s",
+                     cur->data.create_time,
+                     cur->data.operator_name,
+                     cur->data.action,
+                     cur->data.target,
+                     cur->data.target_id,
+                     cur->data.detail);
+            items[i] = buf[i];
+            i++;
+        }
+        cur = cur->next;
     }
 
-    ui_search_list("操作日志(输入搜索, Esc返回)", items, count);
+    ui_search_list("操作日志(输入搜索, Esc返回)", items, match_count);
 
     free((void*)items);
     free(buf);

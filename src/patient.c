@@ -1,6 +1,7 @@
 ﻿#include "patient.h"
 #include "public.h"
 #include "ui_utils.h"
+#include "login.h"
 
 // 预约挂号常量
 #define APPOINTMENT_SLOTS_PER_HALF_DAY 6
@@ -566,6 +567,26 @@ static int patient_onsite_register_menu(const User *current_user) {
         }
         save_doctors_list(doctor_head);
         free_doctor_list(doctor_head);
+
+        // Emergency patients: check bed availability, defer actual assignment to admission
+        if (current_patient.is_emergency) {
+            WardNode *ward_head = load_wards_list();
+            WardNode *ward_node = ward_head;
+            int has_bed = 0;
+            while (ward_node) {
+                if (ward_node->data.remain_beds > 0) {
+                    has_bed = 1;
+                    break;
+                }
+                ward_node = ward_node->next;
+            }
+            if (has_bed) {
+                printf(C_YELLOW "  ⚠ 急诊患者，入院时将优先分配床位。\n" C_RESET);
+            } else {
+                printf(C_RED "  ⚠ 急诊患者，但暂无可用床位!\n" C_RESET);
+            }
+            free_ward_list(ward_head);
+        }
     }
 
     printf("\n");
@@ -656,6 +677,7 @@ void patient_main_menu(const User *current_user) {
     ui_menu_item(4, "住院信息查看");
     ui_menu_item(5, "治疗进度查看");
     ui_menu_item(6, "修改个人信息");
+    ui_menu_item(7, "修改密码");
 }
 
 int patient_register_menu(const User *current_user) {

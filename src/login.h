@@ -16,6 +16,12 @@ void logout(Session *session);
 // Check user permission
 bool has_permission(const User *user, const char *required_role);
 
+// Change password for current user
+int change_password(const User *user);
+
+// Admin reset any user's password
+int admin_reset_password(const User *admin_user);
+
 // Migrate plaintext passwords to SHA-256 hashed
 int migrate_user_passwords(void);
 

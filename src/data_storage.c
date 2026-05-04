@@ -6,6 +6,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include <io.h>
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -28,11 +29,12 @@ static int read_data_line(FILE *fp, char *buffer, size_t size) {
 }
 
 static char *next_token(char **cursor) {
+    static char empty_buf[1] = {0};
     char *start = *cursor;
     char *sep;
 
     if (!start) {
-        return "";
+        return empty_buf;
     }
 
     sep = strchr(start, '\t');
@@ -44,6 +46,50 @@ static char *next_token(char **cursor) {
     }
 
     return start;
+}
+
+// ==================== 字段转义/反转义（防止数据中含 Tab/换行符破坏文件格式） ====================
+
+static void escape_field(const char *input, char *output, size_t output_size) {
+    size_t j = 0;
+    for (size_t i = 0; input[i] != '\0' && j + 4 < output_size; i++) {
+        unsigned char c = (unsigned char)input[i];
+        if (c == '\\') {
+            output[j++] = '\\'; output[j++] = '\\';
+        } else if (c == '\t') {
+            output[j++] = '\\'; output[j++] = 't';
+        } else if (c == '\n') {
+            output[j++] = '\\'; output[j++] = 'n';
+        } else if (c == '\r') {
+            output[j++] = '\\'; output[j++] = 'r';
+        } else {
+            output[j++] = c;
+        }
+    }
+    output[j] = '\0';
+}
+
+static void unescape_field_inplace(char *str) {
+    size_t j = 0;
+    for (size_t i = 0; str[i] != '\0'; i++) {
+        if (str[i] == '\\' && str[i+1] != '\0') {
+            if (str[i+1] == '\\') { str[j++] = '\\'; i++; }
+            else if (str[i+1] == 't') { str[j++] = '\t'; i++; }
+            else if (str[i+1] == 'n') { str[j++] = '\n'; i++; }
+            else if (str[i+1] == 'r') { str[j++] = '\r'; i++; }
+            else { str[j++] = str[i]; }
+        } else {
+            str[j++] = str[i];
+        }
+    }
+    str[j] = '\0';
+}
+
+// 保存时安全地写一个字符串字段（自动转义）
+static void fprintf_escaped(FILE *fp, const char *str) {
+    char buf[4096];
+    escape_field(str, buf, sizeof(buf));
+    fprintf(fp, "%s", buf);
 }
 
 static int parse_int_token(char **cursor) {
@@ -512,10 +558,9 @@ int save_users_list(UserNode *head) {
     fprintf(fp, "# username\tpassword\trole\n");
     UserNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\n",
-                current->data.username,
-                current->data.password,
-                current->data.role);
+        fprintf_escaped(fp, current->data.username); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.password); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.role); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -537,15 +582,15 @@ PatientNode* load_patients_list(void) {
         char *cursor = line;
         Patient patient;
         memset(&patient, 0, sizeof(patient));
-        strncpy(patient.patient_id, next_token(&cursor), sizeof(patient.patient_id) - 1);
-        strncpy(patient.username, next_token(&cursor), sizeof(patient.username) - 1);
-        strncpy(patient.name, next_token(&cursor), sizeof(patient.name) - 1);
-        strncpy(patient.gender, next_token(&cursor), sizeof(patient.gender) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.patient_id, tk, sizeof(patient.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.username, tk, sizeof(patient.username) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.name, tk, sizeof(patient.name) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.gender, tk, sizeof(patient.gender) - 1); }
         patient.age = parse_int_token(&cursor);
-        strncpy(patient.phone, next_token(&cursor), sizeof(patient.phone) - 1);
-        strncpy(patient.address, next_token(&cursor), sizeof(patient.address) - 1);
-        strncpy(patient.patient_type, next_token(&cursor), sizeof(patient.patient_type) - 1);
-        strncpy(patient.treatment_stage, next_token(&cursor), sizeof(patient.treatment_stage) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.phone, tk, sizeof(patient.phone) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.address, tk, sizeof(patient.address) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.patient_type, tk, sizeof(patient.patient_type) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.treatment_stage, tk, sizeof(patient.treatment_stage) - 1); }
         patient.is_emergency = parse_bool_token(&cursor);
 
         PatientNode *node = create_patient_node(&patient);
@@ -577,17 +622,16 @@ int save_patients_list(PatientNode *head) {
     fprintf(fp, "# patient_id\tusername\tname\tgender\tage\tphone\taddress\tpatient_type\ttreatment_stage\tis_emergency\n");
     PatientNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%d\n",
-                current->data.patient_id,
-                current->data.username,
-                current->data.name,
-                current->data.gender,
-                current->data.age,
-                current->data.phone,
-                current->data.address,
-                current->data.patient_type,
-                current->data.treatment_stage,
-                current->data.is_emergency ? 1 : 0);
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.username); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.gender); fprintf(fp, "\t");
+        fprintf(fp, "%d\t", current->data.age);
+        fprintf_escaped(fp, current->data.phone); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.address); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_type); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.treatment_stage); fprintf(fp, "\t");
+        fprintf(fp, "%d\n", current->data.is_emergency ? 1 : 0);
         current = current->next;
     }
 
@@ -609,11 +653,11 @@ DoctorNode* load_doctors_list(void) {
         char *cursor = line;
         Doctor doctor;
         memset(&doctor, 0, sizeof(doctor));
-        strncpy(doctor.doctor_id, next_token(&cursor), sizeof(doctor.doctor_id) - 1);
-        strncpy(doctor.username, next_token(&cursor), sizeof(doctor.username) - 1);
-        strncpy(doctor.name, next_token(&cursor), sizeof(doctor.name) - 1);
-        strncpy(doctor.department_id, next_token(&cursor), sizeof(doctor.department_id) - 1);
-        strncpy(doctor.title, next_token(&cursor), sizeof(doctor.title) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(doctor.doctor_id, tk, sizeof(doctor.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(doctor.username, tk, sizeof(doctor.username) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(doctor.name, tk, sizeof(doctor.name) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(doctor.department_id, tk, sizeof(doctor.department_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(doctor.title, tk, sizeof(doctor.title) - 1); }
         doctor.busy_level = parse_int_token(&cursor);
 
         DoctorNode *node = create_doctor_node(&doctor);
@@ -645,13 +689,12 @@ int save_doctors_list(DoctorNode *head) {
     fprintf(fp, "# doctor_id\tusername\tname\tdepartment_id\ttitle\tbusy_level\n");
     DoctorNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%d\n",
-                current->data.doctor_id,
-                current->data.username,
-                current->data.name,
-                current->data.department_id,
-                current->data.title,
-                current->data.busy_level);
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.username); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.department_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.title); fprintf(fp, "\t");
+        fprintf(fp, "%d\n", current->data.busy_level);
         current = current->next;
     }
 
@@ -673,10 +716,10 @@ DepartmentNode* load_departments_list(void) {
         char *cursor = line;
         Department department;
         memset(&department, 0, sizeof(department));
-        strncpy(department.department_id, next_token(&cursor), sizeof(department.department_id) - 1);
-        strncpy(department.name, next_token(&cursor), sizeof(department.name) - 1);
-        strncpy(department.leader, next_token(&cursor), sizeof(department.leader) - 1);
-        strncpy(department.phone, next_token(&cursor), sizeof(department.phone) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(department.department_id, tk, sizeof(department.department_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(department.name, tk, sizeof(department.name) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(department.leader, tk, sizeof(department.leader) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(department.phone, tk, sizeof(department.phone) - 1); }
 
         DepartmentNode *node = create_department_node(&department);
         if (!node) {
@@ -707,11 +750,10 @@ int save_departments_list(DepartmentNode *head) {
     fprintf(fp, "# department_id\tname\tleader\tphone\n");
     DepartmentNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\n",
-                current->data.department_id,
-                current->data.name,
-                current->data.leader,
-                current->data.phone);
+        fprintf_escaped(fp, current->data.department_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.leader); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.phone); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -733,14 +775,14 @@ DrugNode* load_drugs_list(void) {
         char *cursor = line;
         Drug drug;
         memset(&drug, 0, sizeof(drug));
-        strncpy(drug.drug_id, next_token(&cursor), sizeof(drug.drug_id) - 1);
-        strncpy(drug.name, next_token(&cursor), sizeof(drug.name) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(drug.drug_id, tk, sizeof(drug.drug_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(drug.name, tk, sizeof(drug.name) - 1); }
         drug.price = parse_float_token(&cursor);
         drug.stock_num = parse_int_token(&cursor);
         drug.warning_line = parse_int_token(&cursor);
         drug.is_special = parse_bool_token(&cursor);
         drug.reimbursement_ratio = parse_float_token(&cursor);
-        strncpy(drug.category, next_token(&cursor), sizeof(drug.category) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(drug.category, tk, sizeof(drug.category) - 1); }
         if (drug.category[0] == '\0') strcpy(drug.category, "西药");
 
         DrugNode *node = create_drug_node(&drug);
@@ -772,15 +814,14 @@ int save_drugs_list(DrugNode *head) {
     fprintf(fp, "# drug_id\tname\tprice\tstock_num\twarning_line\tis_special\treimbursement_ratio\tcategory\n");
     DrugNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%.2f\t%d\t%d\t%d\t%.2f\t%s\n",
-                current->data.drug_id,
-                current->data.name,
-                current->data.price,
-                current->data.stock_num,
-                current->data.warning_line,
-                current->data.is_special ? 1 : 0,
-                current->data.reimbursement_ratio,
-                current->data.category);
+        fprintf_escaped(fp, current->data.drug_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
+        fprintf(fp, "%.2f\t", current->data.price);
+        fprintf(fp, "%d\t", current->data.stock_num);
+        fprintf(fp, "%d\t", current->data.warning_line);
+        fprintf(fp, "%d\t", current->data.is_special ? 1 : 0);
+        fprintf(fp, "%.2f\t", current->data.reimbursement_ratio);
+        fprintf_escaped(fp, current->data.category); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -802,8 +843,8 @@ WardNode* load_wards_list(void) {
         char *cursor = line;
         Ward ward;
         memset(&ward, 0, sizeof(ward));
-        strncpy(ward.ward_id, next_token(&cursor), sizeof(ward.ward_id) - 1);
-        strncpy(ward.type, next_token(&cursor), sizeof(ward.type) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(ward.ward_id, tk, sizeof(ward.ward_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(ward.type, tk, sizeof(ward.type) - 1); }
         ward.total_beds = parse_int_token(&cursor);
         ward.remain_beds = parse_int_token(&cursor);
         ward.warning_line = parse_int_token(&cursor);
@@ -837,9 +878,9 @@ int save_wards_list(WardNode *head) {
     fprintf(fp, "# ward_id\ttype\ttotal_beds\tremain_beds\twarning_line\n");
     WardNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%d\t%d\t%d\n",
-                current->data.ward_id,
-                current->data.type,
+        fprintf_escaped(fp, current->data.ward_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.type); fprintf(fp, "\t");
+        fprintf(fp, "%d\t%d\t%d\n",
                 current->data.total_beds,
                 current->data.remain_beds,
                 current->data.warning_line);
@@ -864,14 +905,14 @@ AppointmentNode* load_appointments_list(void) {
         char *cursor = line;
         Appointment appointment;
         memset(&appointment, 0, sizeof(appointment));
-        strncpy(appointment.appointment_id, next_token(&cursor), sizeof(appointment.appointment_id) - 1);
-        strncpy(appointment.patient_id, next_token(&cursor), sizeof(appointment.patient_id) - 1);
-        strncpy(appointment.doctor_id, next_token(&cursor), sizeof(appointment.doctor_id) - 1);
-        strncpy(appointment.department_id, next_token(&cursor), sizeof(appointment.department_id) - 1);
-        strncpy(appointment.appointment_date, next_token(&cursor), sizeof(appointment.appointment_date) - 1);
-        strncpy(appointment.appointment_time, next_token(&cursor), sizeof(appointment.appointment_time) - 1);
-        strncpy(appointment.status, next_token(&cursor), sizeof(appointment.status) - 1);
-        strncpy(appointment.create_time, next_token(&cursor), sizeof(appointment.create_time) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.appointment_id, tk, sizeof(appointment.appointment_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.patient_id, tk, sizeof(appointment.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.doctor_id, tk, sizeof(appointment.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.department_id, tk, sizeof(appointment.department_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.appointment_date, tk, sizeof(appointment.appointment_date) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.appointment_time, tk, sizeof(appointment.appointment_time) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.status, tk, sizeof(appointment.status) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.create_time, tk, sizeof(appointment.create_time) - 1); }
 
         AppointmentNode *node = create_appointment_node(&appointment);
         if (!node) {
@@ -879,7 +920,7 @@ AppointmentNode* load_appointments_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -888,7 +929,7 @@ AppointmentNode* load_appointments_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -902,15 +943,14 @@ int save_appointments_list(AppointmentNode *head) {
     fprintf(fp, "# appointment_id\tpatient_id\tdoctor_id\tdepartment_id\tappointment_date\tappointment_time\tstatus\tcreate_time\n");
     AppointmentNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-                current->data.appointment_id,
-                current->data.patient_id,
-                current->data.doctor_id,
-                current->data.department_id,
-                current->data.appointment_date,
-                current->data.appointment_time,
-                current->data.status,
-                current->data.create_time);
+        fprintf_escaped(fp, current->data.appointment_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.department_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.appointment_date); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.appointment_time); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.status); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.create_time); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -932,13 +972,13 @@ OnsiteRegistrationQueue load_onsite_registration_queue(void) {
         char *cursor = line;
         OnsiteRegistration registration;
         memset(&registration, 0, sizeof(registration));
-        strncpy(registration.onsite_id, next_token(&cursor), sizeof(registration.onsite_id) - 1);
-        strncpy(registration.patient_id, next_token(&cursor), sizeof(registration.patient_id) - 1);
-        strncpy(registration.doctor_id, next_token(&cursor), sizeof(registration.doctor_id) - 1);
-        strncpy(registration.department_id, next_token(&cursor), sizeof(registration.department_id) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.onsite_id, tk, sizeof(registration.onsite_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.patient_id, tk, sizeof(registration.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.doctor_id, tk, sizeof(registration.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.department_id, tk, sizeof(registration.department_id) - 1); }
         registration.queue_number = parse_int_token(&cursor);
-        strncpy(registration.status, next_token(&cursor), sizeof(registration.status) - 1);
-        strncpy(registration.create_time, next_token(&cursor), sizeof(registration.create_time) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.status, tk, sizeof(registration.status) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.create_time, tk, sizeof(registration.create_time) - 1); }
 
         if (enqueue_onsite_registration(&queue, &registration, false) != SUCCESS) {
             free_onsite_registration_queue(&queue);
@@ -961,14 +1001,13 @@ int save_onsite_registration_queue(const OnsiteRegistrationQueue *queue) {
     fprintf(fp, "# onsite_id\tpatient_id\tdoctor_id\tdepartment_id\tqueue_number\tstatus\tcreate_time\n");
     current = queue ? queue->front : NULL;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-                current->data.onsite_id,
-                current->data.patient_id,
-                current->data.doctor_id,
-                current->data.department_id,
-                current->data.queue_number,
-                current->data.status,
-                current->data.create_time);
+        fprintf_escaped(fp, current->data.onsite_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.department_id); fprintf(fp, "\t");
+        fprintf(fp, "%d\t", current->data.queue_number);
+        fprintf_escaped(fp, current->data.status); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.create_time); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -1008,13 +1047,13 @@ WardCallNode* load_ward_calls_list(void) {
         char *cursor = line;
         WardCall call;
         memset(&call, 0, sizeof(call));
-        strncpy(call.call_id, next_token(&cursor), sizeof(call.call_id) - 1);
-        strncpy(call.ward_id, next_token(&cursor), sizeof(call.ward_id) - 1);
-        strncpy(call.department_id, next_token(&cursor), sizeof(call.department_id) - 1);
-        strncpy(call.patient_id, next_token(&cursor), sizeof(call.patient_id) - 1);
-        strncpy(call.message, next_token(&cursor), sizeof(call.message) - 1);
-        strncpy(call.status, next_token(&cursor), sizeof(call.status) - 1);
-        strncpy(call.create_time, next_token(&cursor), sizeof(call.create_time) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.call_id, tk, sizeof(call.call_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.ward_id, tk, sizeof(call.ward_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.department_id, tk, sizeof(call.department_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.patient_id, tk, sizeof(call.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.message, tk, sizeof(call.message) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.status, tk, sizeof(call.status) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(call.create_time, tk, sizeof(call.create_time) - 1); }
 
         WardCallNode *node = create_ward_call_node(&call);
         if (!node) {
@@ -1046,14 +1085,13 @@ int save_ward_calls_list(WardCallNode *head) {
 
     fprintf(fp, "# call_id\tward_id\tdepartment_id\tpatient_id\tmessage\tstatus\tcreate_time\n");
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-                current->data.call_id,
-                current->data.ward_id,
-                current->data.department_id,
-                current->data.patient_id,
-                current->data.message,
-                current->data.status,
-                current->data.create_time);
+        fprintf_escaped(fp, current->data.call_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.ward_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.department_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.message); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.status); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.create_time); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -1105,13 +1143,13 @@ ScheduleNode* load_schedules_list(void) {
         char *cursor = line;
         Schedule schedule;
         memset(&schedule, 0, sizeof(schedule));
-        strncpy(schedule.schedule_id, next_token(&cursor), sizeof(schedule.schedule_id) - 1);
-        strncpy(schedule.doctor_id, next_token(&cursor), sizeof(schedule.doctor_id) - 1);
-        strncpy(schedule.work_date, next_token(&cursor), sizeof(schedule.work_date) - 1);
-        strncpy(schedule.time_slot, next_token(&cursor), sizeof(schedule.time_slot) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.schedule_id, tk, sizeof(schedule.schedule_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.doctor_id, tk, sizeof(schedule.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.work_date, tk, sizeof(schedule.work_date) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.time_slot, tk, sizeof(schedule.time_slot) - 1); }
         schedule.max_appt = parse_int_token(&cursor);
         schedule.max_onsite = parse_int_token(&cursor);
-        strncpy(schedule.status, next_token(&cursor), sizeof(schedule.status) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.status, tk, sizeof(schedule.status) - 1); }
 
         ScheduleNode *node = create_schedule_node(&schedule);
         if (!node) {
@@ -1142,14 +1180,12 @@ int save_schedules_list(ScheduleNode *head) {
     fprintf(fp, "# schedule_id\tdoctor_id\twork_date\ttime_slot\tmax_appt\tmax_onsite\tstatus\n");
     ScheduleNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
-                current->data.schedule_id,
-                current->data.doctor_id,
-                current->data.work_date,
-                current->data.time_slot,
-                current->data.max_appt,
-                current->data.max_onsite,
-                current->data.status);
+        fprintf_escaped(fp, current->data.schedule_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.work_date); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.time_slot); fprintf(fp, "\t");
+        fprintf(fp, "%d\t%d\t", current->data.max_appt, current->data.max_onsite);
+        fprintf_escaped(fp, current->data.status); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -1190,13 +1226,13 @@ MedicalRecordNode* load_medical_records_list(void) {
         char *cursor = line;
         MedicalRecord record;
         memset(&record, 0, sizeof(record));
-        strncpy(record.record_id, next_token(&cursor), sizeof(record.record_id) - 1);
-        strncpy(record.patient_id, next_token(&cursor), sizeof(record.patient_id) - 1);
-        strncpy(record.doctor_id, next_token(&cursor), sizeof(record.doctor_id) - 1);
-        strncpy(record.appointment_id, next_token(&cursor), sizeof(record.appointment_id) - 1);
-        strncpy(record.diagnosis, next_token(&cursor), sizeof(record.diagnosis) - 1);
-        strncpy(record.diagnosis_date, next_token(&cursor), sizeof(record.diagnosis_date) - 1);
-        strncpy(record.status, next_token(&cursor), sizeof(record.status) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.record_id, tk, sizeof(record.record_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.patient_id, tk, sizeof(record.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.doctor_id, tk, sizeof(record.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.appointment_id, tk, sizeof(record.appointment_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.diagnosis, tk, sizeof(record.diagnosis) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.diagnosis_date, tk, sizeof(record.diagnosis_date) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(record.status, tk, sizeof(record.status) - 1); }
 
         MedicalRecordNode *node = create_medical_record_node(&record);
         if (!node) {
@@ -1227,14 +1263,13 @@ int save_medical_records_list(MedicalRecordNode *head) {
     fprintf(fp, "# record_id\tpatient_id\tdoctor_id\tappointment_id\tdiagnosis\tdiagnosis_date\tstatus\n");
     MedicalRecordNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-                current->data.record_id,
-                current->data.patient_id,
-                current->data.doctor_id,
-                current->data.appointment_id,
-                current->data.diagnosis,
-                current->data.diagnosis_date,
-                current->data.status);
+        fprintf_escaped(fp, current->data.record_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.appointment_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.diagnosis); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.diagnosis_date); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.status); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -1256,14 +1291,14 @@ PrescriptionNode* load_prescriptions_list(void) {
         char *cursor = line;
         Prescription prescription;
         memset(&prescription, 0, sizeof(prescription));
-        strncpy(prescription.prescription_id, next_token(&cursor), sizeof(prescription.prescription_id) - 1);
-        strncpy(prescription.record_id, next_token(&cursor), sizeof(prescription.record_id) - 1);
-        strncpy(prescription.patient_id, next_token(&cursor), sizeof(prescription.patient_id) - 1);
-        strncpy(prescription.doctor_id, next_token(&cursor), sizeof(prescription.doctor_id) - 1);
-        strncpy(prescription.drug_id, next_token(&cursor), sizeof(prescription.drug_id) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.prescription_id, tk, sizeof(prescription.prescription_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.record_id, tk, sizeof(prescription.record_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.patient_id, tk, sizeof(prescription.patient_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.doctor_id, tk, sizeof(prescription.doctor_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.drug_id, tk, sizeof(prescription.drug_id) - 1); }
         prescription.quantity = parse_int_token(&cursor);
         prescription.total_price = parse_float_token(&cursor);
-        strncpy(prescription.prescription_date, next_token(&cursor), sizeof(prescription.prescription_date) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(prescription.prescription_date, tk, sizeof(prescription.prescription_date) - 1); }
 
         PrescriptionNode *node = create_prescription_node(&prescription);
         if (!node) {
@@ -1294,15 +1329,13 @@ int save_prescriptions_list(PrescriptionNode *head) {
     fprintf(fp, "# prescription_id\trecord_id\tpatient_id\tdoctor_id\tdrug_id\tquantity\ttotal_price\tprescription_date\n");
     PrescriptionNode *current = head;
     while (current) {
-        fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%d\t%.2f\t%s\n",
-                current->data.prescription_id,
-                current->data.record_id,
-                current->data.patient_id,
-                current->data.doctor_id,
-                current->data.drug_id,
-                current->data.quantity,
-                current->data.total_price,
-                current->data.prescription_date);
+        fprintf_escaped(fp, current->data.prescription_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.record_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.patient_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.doctor_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, current->data.drug_id); fprintf(fp, "\t");
+        fprintf(fp, "%d\t%.2f\t", current->data.quantity, current->data.total_price);
+        fprintf_escaped(fp, current->data.prescription_date); fprintf(fp, "\n");
         current = current->next;
     }
 
@@ -1897,10 +1930,10 @@ TemplateNode* load_templates_list(void) {
         char *cursor = line;
         MedicalTemplate tmpl;
         memset(&tmpl, 0, sizeof(tmpl));
-        strncpy(tmpl.template_id, next_token(&cursor), sizeof(tmpl.template_id) - 1);
-        strncpy(tmpl.category, next_token(&cursor), sizeof(tmpl.category) - 1);
-        strncpy(tmpl.shortcut, next_token(&cursor), sizeof(tmpl.shortcut) - 1);
-        strncpy(tmpl.text, next_token(&cursor), sizeof(tmpl.text) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(tmpl.template_id, tk, sizeof(tmpl.template_id) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(tmpl.category, tk, sizeof(tmpl.category) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(tmpl.shortcut, tk, sizeof(tmpl.shortcut) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(tmpl.text, tk, sizeof(tmpl.text) - 1); }
         TemplateNode *node = create_template_node(&tmpl);
         if (!node) { free_template_list(head); fclose(fp); return NULL; }
         if (!head) { head = node; tail = node; }
@@ -1916,9 +1949,10 @@ int save_templates_list(TemplateNode *head) {
     fprintf(fp, "# template_id\tcategory\tshortcut\ttext\n");
     TemplateNode *cur = head;
     while (cur) {
-        fprintf(fp, "%s\t%s\t%s\t%s\n",
-            cur->data.template_id, cur->data.category,
-            cur->data.shortcut, cur->data.text);
+        fprintf_escaped(fp, cur->data.template_id); fprintf(fp, "\t");
+        fprintf_escaped(fp, cur->data.category); fprintf(fp, "\t");
+        fprintf_escaped(fp, cur->data.shortcut); fprintf(fp, "\t");
+        fprintf_escaped(fp, cur->data.text); fprintf(fp, "\n");
         cur = cur->next;
     }
     fclose(fp);
@@ -1997,13 +2031,13 @@ LogEntryNode* load_logs_list(void) {
         char *cursor = line;
         LogEntry entry;
         memset(&entry, 0, sizeof(entry));
-        strncpy(entry.log_id, next_token(&cursor), MAX_ID - 1);
-        strncpy(entry.operator_name, next_token(&cursor), MAX_USERNAME - 1);
-        strncpy(entry.action, next_token(&cursor), sizeof(entry.action) - 1);
-        strncpy(entry.target, next_token(&cursor), sizeof(entry.target) - 1);
-        strncpy(entry.target_id, next_token(&cursor), MAX_ID - 1);
-        strncpy(entry.detail, next_token(&cursor), sizeof(entry.detail) - 1);
-        strncpy(entry.create_time, next_token(&cursor), sizeof(entry.create_time) - 1);
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.log_id, tk, MAX_ID - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.operator_name, tk, MAX_USERNAME - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.action, tk, sizeof(entry.action) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.target, tk, sizeof(entry.target) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.target_id, tk, MAX_ID - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.detail, tk, sizeof(entry.detail) - 1); }
+        { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(entry.create_time, tk, sizeof(entry.create_time) - 1); }
 
         LogEntryNode *node = create_log_entry_node(&entry);
         if (!node) { free_log_entry_list(head); fclose(fp); return NULL; }
@@ -2031,8 +2065,13 @@ int append_log(const char *operator_name, const char *action, const char *target
     char create_time[30];
     get_current_time(create_time, sizeof(create_time));
 
-    fprintf(fp, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-            log_id, operator_name, action, target, target_id, detail, create_time);
+    fprintf_escaped(fp, log_id); fprintf(fp, "\t");
+    fprintf_escaped(fp, operator_name); fprintf(fp, "\t");
+    fprintf_escaped(fp, action); fprintf(fp, "\t");
+    fprintf_escaped(fp, target); fprintf(fp, "\t");
+    fprintf_escaped(fp, target_id); fprintf(fp, "\t");
+    fprintf_escaped(fp, detail); fprintf(fp, "\t");
+    fprintf_escaped(fp, create_time); fprintf(fp, "\n");
     fclose(fp);
     return SUCCESS;
 }
@@ -2046,6 +2085,55 @@ static const char *backup_data_files[] = {
     "templates.txt", "schedules.txt", "logs.txt"
 };
 static const int backup_file_count = sizeof(backup_data_files) / sizeof(backup_data_files[0]);
+#define MAX_BACKUPS 20
+
+#ifdef _WIN32
+#include <io.h>
+static void remove_oldest_backup(void) {
+    struct _finddata_t fd;
+    intptr_t handle = _findfirst(DATA_DIR "/backup/*", &fd);
+    if (handle == -1L) return;
+
+    char oldest[64] = "";
+    int count = 0;
+    do {
+        if (fd.attrib & _A_SUBDIR) {
+            if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
+            count++;
+            if (oldest[0] == '\0' || strcmp(fd.name, oldest) < 0)
+                strncpy(oldest, fd.name, sizeof(oldest) - 1);
+        }
+    } while (_findnext(handle, &fd) == 0);
+    _findclose(handle);
+
+    if (count > MAX_BACKUPS && oldest[0]) {
+        char path[256];
+        snprintf(path, sizeof(path), DATA_DIR "/backup/%s", oldest);
+        // Remove all files in the backup directory first
+        char search[256];
+        snprintf(search, sizeof(search), "%s/*", path);
+        struct _finddata_t ffd;
+        intptr_t fh = _findfirst(search, &ffd);
+        if (fh != -1L) {
+            do {
+                if (strcmp(ffd.name, ".") != 0 && strcmp(ffd.name, "..") != 0) {
+                    char fp[512];
+                    snprintf(fp, sizeof(fp), "%s/%s", path, ffd.name);
+                    remove(fp);
+                }
+            } while (_findnext(fh, &ffd) == 0);
+            _findclose(fh);
+        }
+        _rmdir(path);
+        printf("  ⚠ 已清理最旧备份: %s (超过 %d 个限制)\n", oldest, MAX_BACKUPS);
+    }
+}
+#else
+static void remove_oldest_backup(void) {
+    // Unix version - simplified
+    (void)0;
+}
+#endif
 
 static int copy_file(const char *src, const char *dst) {
     FILE *fs = fopen(src, "rb");
@@ -2090,6 +2178,11 @@ int backup_data(void) {
     }
 
     printf("备份完成: %s (%d/%d 文件)\n", dir_name, success_count, backup_file_count);
+
+    if (success_count > 0) {
+        remove_oldest_backup();
+    }
+
     return SUCCESS;
 }
 

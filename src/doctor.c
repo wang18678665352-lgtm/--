@@ -1,6 +1,7 @@
 #include "doctor.h"
 #include "public.h"
 #include "ui_utils.h"
+#include "login.h"
 
 static void print_patient_name_by_id(const char *patient_id, char *patient_name, size_t size) {
     PatientNode *patient_head = load_patients_list();
@@ -218,6 +219,31 @@ static void show_current_doctor_registrations(const Doctor *doctor) {
     int found_appt = 0;
     int found_onsite = 0;
 
+    // Emergency patient banner
+    {
+        PatientNode *ph = load_patients_list();
+        OnsiteRegistrationNode *on = onsite_queue.front;
+        int emergency_count = 0;
+        while (on) {
+            if (strcmp(on->data.doctor_id, doctor->doctor_id) == 0 &&
+                (strcmp(on->data.status, "待就诊") == 0 || strcmp(on->data.status, "呼叫中") == 0)) {
+                PatientNode *pn = ph;
+                while (pn) {
+                    if (strcmp(pn->data.patient_id, on->data.patient_id) == 0 && pn->data.is_emergency) {
+                        emergency_count++;
+                        break;
+                    }
+                    pn = pn->next;
+                }
+            }
+            on = on->next;
+        }
+        if (emergency_count > 0) {
+            printf("\n" BG_RED C_WHITE "  ⚠ 急诊患者 %d 人待接诊! " C_RESET "\n\n", emergency_count);
+        }
+        if (ph) free_patient_list(ph);
+    }
+
     { // paginated: 预约挂号
         int ac = count_appointment_list(appointment_head);
         // first pass: count matching
@@ -304,6 +330,7 @@ void doctor_main_menu(const User *current_user) {
     ui_menu_item(5, "紧急病人标识");
     ui_menu_item(6, "治疗进度更新");
     ui_menu_item(7, "模板管理");
+    ui_menu_item(8, "修改密码");
 }
 
 int doctor_appointment_reminder_menu(const User *current_user) {
@@ -774,11 +801,26 @@ int doctor_prescribe_menu(const User *current_user) {
             tail->next = new_node;
         }
     }
-    save_prescriptions_list(prescription_head);
-    free_prescription_list(prescription_head);
-
+    // Transaction: save drug list first (stock), only then save prescription.
     current_drug->data.stock_num -= quantity;
-    save_drugs_list(drug_head);
+    if (save_drugs_list(drug_head) != SUCCESS) {
+        ui_err("库存更新失败，处方未保存!");
+        current_drug->data.stock_num += quantity;
+        free_prescription_list(prescription_head);
+        free_drug_list(drug_head);
+        free_medical_record_list(record_head);
+        return ERROR_FILE_IO;
+    }
+    if (save_prescriptions_list(prescription_head) != SUCCESS) {
+        ui_err("处方保存失败，回滚库存!");
+        current_drug->data.stock_num += quantity;
+        save_drugs_list(drug_head);
+        free_prescription_list(prescription_head);
+        free_drug_list(drug_head);
+        free_medical_record_list(record_head);
+        return ERROR_FILE_IO;
+    }
+    free_prescription_list(prescription_head);
 
     strcpy(current_record->data.status, "治疗中");
     save_medical_records_list(record_head);

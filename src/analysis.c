@@ -2,6 +2,9 @@
 #include "data_storage.h"
 #include "public.h"
 #include "ui_utils.h"
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 // =======================  辅助结构 =======================
 
@@ -802,6 +805,168 @@ static void analysis_financial_stats(const char *month_filter) {
     free_prescription_list(pres_head);
 }
 
+// =======================  CSV 导出 =======================
+
+static void analysis_export_csv(const char *month_filter) {
+    ui_sub_header("导出报表为 CSV");
+
+    // Create export directory
+#ifdef _WIN32
+    _mkdir(DATA_DIR "/export");
+#else
+    mkdir(DATA_DIR "/export", 0755);
+#endif
+
+    char path[256];
+    int count = 0;
+
+    // Export patients
+    {
+        PatientNode *ph = load_patients_list();
+        snprintf(path, sizeof(path), DATA_DIR "/export/patients.csv");
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "# patient_id,username,name,gender,age,phone,address,patient_type,treatment_stage,is_emergency\n");
+            PatientNode *p = ph;
+            while (p) {
+                fprintf(fp, "\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\",\"%s\",\"%s\",\"%s\",%d\n",
+                        p->data.patient_id, p->data.username, p->data.name,
+                        p->data.gender, p->data.age, p->data.phone,
+                        p->data.address, p->data.patient_type,
+                        p->data.treatment_stage, p->data.is_emergency ? 1 : 0);
+                p = p->next;
+            }
+            fclose(fp);
+            count++;
+        }
+        if (ph) free_patient_list(ph);
+    }
+
+    // Export doctors
+    {
+        DoctorNode *dh = load_doctors_list();
+        snprintf(path, sizeof(path), DATA_DIR "/export/doctors.csv");
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "# doctor_id,username,name,department_id,title,busy_level\n");
+            DoctorNode *d = dh;
+            while (d) {
+                fprintf(fp, "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d\n",
+                        d->data.doctor_id, d->data.username, d->data.name,
+                        d->data.department_id, d->data.title, d->data.busy_level);
+                d = d->next;
+            }
+            fclose(fp);
+            count++;
+        }
+        if (dh) free_doctor_list(dh);
+    }
+
+    // Export appointments (filtered by month if applicable)
+    {
+        AppointmentNode *ah = load_appointments_list();
+        snprintf(path, sizeof(path), DATA_DIR "/export/appointments.csv");
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "# appointment_id,patient_id,doctor_id,department_id,date,time,status,create_time\n");
+            AppointmentNode *a = ah;
+            while (a) {
+                if (month_filter[0] == '\0' || str_starts_with(a->data.create_time, month_filter)) {
+                    fprintf(fp, "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            a->data.appointment_id, a->data.patient_id,
+                            a->data.doctor_id, a->data.department_id,
+                            a->data.appointment_date, a->data.appointment_time,
+                            a->data.status, a->data.create_time);
+                }
+                a = a->next;
+            }
+            fclose(fp);
+            count++;
+        }
+        if (ah) free_appointment_list(ah);
+    }
+
+    // Export prescriptions (filtered by month if applicable)
+    {
+        PrescriptionNode *ph = load_prescriptions_list();
+        snprintf(path, sizeof(path), DATA_DIR "/export/prescriptions.csv");
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "# prescription_id,record_id,patient_id,doctor_id,drug_id,quantity,total_price,date\n");
+            PrescriptionNode *p = ph;
+            while (p) {
+                if (month_filter[0] == '\0' || str_starts_with(p->data.prescription_date, month_filter)) {
+                    fprintf(fp, "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",%d,%.2f,\"%s\"\n",
+                            p->data.prescription_id, p->data.record_id,
+                            p->data.patient_id, p->data.doctor_id,
+                            p->data.drug_id, p->data.quantity,
+                            p->data.total_price, p->data.prescription_date);
+                }
+                p = p->next;
+            }
+            fclose(fp);
+            count++;
+        }
+        if (ph) free_prescription_list(ph);
+    }
+
+    // Export drugs
+    {
+        DrugNode *dh = load_drugs_list();
+        snprintf(path, sizeof(path), DATA_DIR "/export/drugs.csv");
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "# drug_id,name,price,stock_num,warning_line,is_special,reimbursement_ratio,category\n");
+            DrugNode *d = dh;
+            while (d) {
+                fprintf(fp, "\"%s\",\"%s\",%.2f,%d,%d,%d,%.2f,\"%s\"\n",
+                        d->data.drug_id, d->data.name, d->data.price,
+                        d->data.stock_num, d->data.warning_line,
+                        d->data.is_special ? 1 : 0,
+                        d->data.reimbursement_ratio, d->data.category);
+                d = d->next;
+            }
+            fclose(fp);
+            count++;
+        }
+        if (dh) free_drug_list(dh);
+    }
+
+    if (count > 0) {
+        char _msg[128];
+        snprintf(_msg, sizeof(_msg), "导出完成! %d 个 CSV 文件已保存到 data/export/ 目录。", count);
+        ui_ok(_msg);
+        puts("  可直接用 Excel 打开。");
+    } else {
+        ui_err("导出失败!");
+    }
+
+    // Also export filtered logs
+    {
+        LogEntryNode *lh = load_logs_list();
+        if (lh) {
+            snprintf(path, sizeof(path), DATA_DIR "/export/logs.csv");
+            FILE *fp = fopen(path, "w");
+            if (fp) {
+                fprintf(fp, "# log_id,operator,action,target,target_id,detail,create_time\n");
+                LogEntryNode *l = lh;
+                while (l) {
+                    if (month_filter[0] == '\0' || str_starts_with(l->data.create_time, month_filter)) {
+                        fprintf(fp, "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                                l->data.log_id, l->data.operator_name,
+                                l->data.action, l->data.target,
+                                l->data.target_id, l->data.detail, l->data.create_time);
+                    }
+                    l = l->next;
+                }
+                fclose(fp);
+                printf(C_GREEN "  ✓ 已导出日志到 data/export/logs.csv\n" C_RESET);
+            }
+            free_log_entry_list(lh);
+        }
+    }
+}
+
 // =======================  入口菜单 =======================
 
 int admin_analysis_menu(const User *current_user) {
@@ -821,13 +986,14 @@ int admin_analysis_menu(const User *current_user) {
         ui_menu_item(4, "患者画像");
         ui_menu_item(5, "财务统计");
         ui_menu_item(6, "切换月份筛选");
+        ui_menu_item(7, "导出 CSV");
         if (month_filter[0]) {
             printf(C_DIM "  当前筛选: %s\n" C_RESET, month_filter);
         }
         ui_menu_item(0, "返回");
         ui_box_bottom();
 
-        int choice = get_menu_choice(0, 6);
+        int choice = get_menu_choice(0, 7);
         if (choice == 0) break;
 
         switch (choice) {
@@ -853,6 +1019,9 @@ int admin_analysis_menu(const User *current_user) {
                 month_filter[sizeof(month_filter) - 1] = '\0';
                 continue;
             }
+            case 7:
+                analysis_export_csv(month_filter);
+                break;
         }
         pause_screen();
     }

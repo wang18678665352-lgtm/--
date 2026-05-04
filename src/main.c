@@ -17,10 +17,53 @@ void run_patient_menu(const User *user);
 void run_doctor_menu(const User *user);
 void run_admin_menu(const User *user);
 
+static int check_data_files(void) {
+    const char *required_files[] = {
+        USERS_FILE, PATIENTS_FILE, DOCTORS_FILE, DEPARTMENTS_FILE,
+        DRUGS_FILE, WARDS_FILE, APPOINTMENTS_FILE, ONSITE_REGISTRATIONS_FILE,
+        WARD_CALLS_FILE, MEDICAL_RECORDS_FILE, PRESCRIPTIONS_FILE,
+        TEMPLATES_FILE, SCHEDULES_FILE, LOGS_FILE
+    };
+    int file_count = sizeof(required_files) / sizeof(required_files[0]);
+    int missing = 0;
+
+    for (int i = 0; i < file_count; i++) {
+        FILE *fp = fopen(required_files[i], "r");
+        if (!fp) {
+            if (i == 0) return 0; // users.txt missing - fresh install
+            if (missing == 0) {
+                printf(C_YELLOW "  ⚠ 部分数据文件缺失:\n" C_RESET);
+            }
+            printf(C_YELLOW "    - %s\n" C_RESET, required_files[i]);
+            missing++;
+        } else {
+            // Quick format check: first line should be a header starting with #
+            char first[64];
+            if (!fgets(first, sizeof(first), fp) || first[0] != '#') {
+                if (missing == 0) {
+                    printf(C_YELLOW "  ⚠ 部分数据文件可能已损坏:\n" C_RESET);
+                }
+                printf(C_YELLOW "    - %s (格式异常)\n" C_RESET, required_files[i]);
+                missing++;
+            }
+            fclose(fp);
+        }
+    }
+
+    if (missing > 0) {
+        printf("\n" C_YELLOW "  ⚠ 建议使用数据管理中的备份还原功能恢复数据。\n" C_RESET);
+        printf(C_YELLOW "  ⚠ 或删除 data/users.txt 后重启以重新初始化。\n\n" C_RESET);
+        printf(C_CYAN "  按回车键继续..." C_RESET);
+        clear_input_buffer();
+        getchar();
+    }
+    return 1;
+}
+
 int main(void) {
     // Initialize console encoding for UTF-8
     init_console_encoding();
-    
+
     printf("\n");
     printf(C_BOLD C_CYAN "  ╔══════════════════════════════════════════════════╗\n" C_RESET);
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                  " C_BOLD C_CYAN "║\n" C_RESET);
@@ -29,12 +72,15 @@ int main(void) {
     printf(C_BOLD C_CYAN "  ║" C_RESET "                                                  " C_BOLD C_CYAN "║\n" C_RESET);
     printf(C_BOLD C_CYAN "  ╚══════════════════════════════════════════════════╝\n" C_RESET);
     printf("\n");
-    
+
     // Initialize data storage
     if (init_data_storage() != SUCCESS) {
         printf("数据存储初始化失败!\n");
         return 1;
     }
+
+    // Check data file integrity
+    check_data_files();
 
     // Create default admin user if not exists
     UserNode *head = load_users_list();
@@ -178,8 +224,8 @@ void run_patient_menu(const User *user) {
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
-        int choice = get_menu_choice(0, 6);
-        
+        int choice = get_menu_choice(0, 7);
+
         switch (choice) {
             case 0:
                 logout(&global_session);
@@ -190,6 +236,7 @@ void run_patient_menu(const User *user) {
             case 4: patient_view_ward_menu(user); break;
             case 5: patient_view_treatment_progress_menu(user); break;
             case 6: patient_edit_profile_menu(user); break;
+            case 7: change_password(user); break;
         }
         pause_screen();
     }
@@ -209,8 +256,8 @@ void run_doctor_menu(const User *user) {
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
-        int choice = get_menu_choice(0, 7);
-        
+        int choice = get_menu_choice(0, 8);
+
         switch (choice) {
             case 0:
                 logout(&global_session);
@@ -222,6 +269,7 @@ void run_doctor_menu(const User *user) {
             case 5: doctor_emergency_flag_menu(user); break;
             case 6: doctor_update_progress_menu(user); break;
             case 7: doctor_template_menu(user); break;
+            case 8: change_password(user); break;
         }
         pause_screen();
     }
@@ -241,7 +289,7 @@ void run_admin_menu(const User *user) {
         ui_menu_exit(0, "退出登录");
         ui_box_bottom();
         
-        int choice = get_menu_choice(0, 9);
+        int choice = get_menu_choice(0, 10);
 
         switch (choice) {
             case 0:
@@ -256,6 +304,7 @@ void run_admin_menu(const User *user) {
             case 7: admin_schedule_menu(user); break;
             case 8: admin_log_menu(user); break;
             case 9: admin_data_menu(user); break;
+            case 10: admin_reset_password(user); break;
         }
         pause_screen();
     }

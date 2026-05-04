@@ -505,10 +505,7 @@ void ui_paginate(const char **items, int count, int page_size, const char *title
 
         if (total_pages > 1) {
             printf(C_DIM "  ─── 第 %d/%d 页", page + 1, total_pages);
-            if (page < total_pages - 1) {
-                printf("，回车继续");
-            }
-            printf("，q 返回，s 搜索" C_RESET "\n");
+            printf("  n下一页 p上一页 g跳页 q返回 s搜索" C_RESET "\n");
 
             int c = getchar();
             if (c != '\n') clear_input_buffer();
@@ -549,7 +546,29 @@ void ui_paginate(const char **items, int count, int page_size, const char *title
                 continue;
             }
 
-            if (c != '\n' && page >= total_pages - 1) break;
+            if (c == 'p' || c == 'P') {
+                if (page > 0) { page -= 2; continue; }
+                printf(C_DIM "  已是第一页\n" C_RESET);
+                continue;
+            }
+
+            if (c == 'g' || c == 'G') {
+                printf(S_LABEL "  输入页码 (1-%d): " C_RESET, total_pages);
+                char pg_buf[16];
+                if (read_input_line(pg_buf, sizeof(pg_buf)) && pg_buf[0]) {
+                    int goto_page = atoi(pg_buf) - 1;
+                    if (goto_page >= 0 && goto_page < total_pages) { page = goto_page - 1; }
+                    else { printf(C_DIM "  无效页码\n" C_RESET); continue; }
+                } else { continue; }
+                continue;
+            }
+
+            if (c == '\n' || c == 'n' || c == 'N') {
+                if (page >= total_pages - 1) break;
+                // else normal page++ below
+            } else if (c != '\n' && c != 'n' && c != 'N') {
+                if (page >= total_pages - 1) break;
+            }
         }
 
         page++;
