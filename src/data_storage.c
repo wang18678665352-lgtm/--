@@ -528,6 +528,7 @@ UserNode* load_users_list(void) {
         strncpy(user.password, next_token(&cursor), sizeof(user.password) - 1);
         user.password[sizeof(user.password) - 1] = '\0';
         strncpy(user.role, next_token(&cursor), sizeof(user.role) - 1);
+        user.role[sizeof(user.role) - 1] = '\0';
 
         UserNode *node = create_user_node(&user);
         if (!node) {
