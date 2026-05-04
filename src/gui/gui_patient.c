@@ -141,6 +141,61 @@ static int ShowPatFieldDialog(HWND hParent, const char *title,
     return g_pfResult == 1;
 }
 
+/* ─── 日期校验工具 ──────────────────────────────────────────────────── */
+
+static int is_valid_date_str(const char *str) {
+    int y, m, d;
+    if (sscanf(str, "%d-%d-%d", &y, &m, &d) != 3) return 0;
+    if (m < 1 || m > 12 || d < 1) return 0;
+    /* 各月天数 */
+    int dim[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) dim[1] = 29;
+    if (d > dim[m - 1]) return 0;
+    return 1;
+}
+
+/* 检查 dateStr(YYYY-MM-DD) 是否在 [today, today+maxDays] 范围内 */
+static int is_date_in_range(const char *dateStr, int maxDays) {
+    time_t now = time(NULL);
+    struct tm tmNow;
+    memcpy(&tmNow, localtime(&now), sizeof(tmNow));
+
+    struct tm tmTarget = {0};
+    if (sscanf(dateStr, "%d-%d-%d", &tmTarget.tm_year, &tmTarget.tm_mon, &tmTarget.tm_mday) != 3)
+        return 0;
+    tmTarget.tm_year -= 1900;
+    tmTarget.tm_mon  -= 1;
+    tmTarget.tm_hour = 12; /* midday to avoid DST edge issues */
+    time_t tTarget = mktime(&tmTarget);
+    if (tTarget == (time_t)-1) return 0;
+
+    /* 当天 00:00 */
+    tmNow.tm_hour = 0; tmNow.tm_min = 0; tmNow.tm_sec = 0;
+    time_t tNow = mktime(&tmNow);
+
+    if (tTarget < tNow) return 0; /* 不能在过去 */
+    if (tTarget > tNow + maxDays * 86400LL) return 0; /* 超出最大天数 */
+    return 1;
+}
+
+/* 检查医生在指定日期时段是否有排班 */
+static int doctor_has_schedule(const char *docId, const char *date, const char *timeSlot) {
+    ScheduleNode *sched = load_schedules_list();
+    if (!sched) return 1; /* 无排班数据则放行 */
+    int found = 0;
+    for (ScheduleNode *cur = sched; cur; cur = cur->next) {
+        if (strcmp(cur->data.doctor_id, docId) == 0 &&
+            strcmp(cur->data.work_date, date) == 0 &&
+            strcmp(cur->data.time_slot, timeSlot) == 0 &&
+            strcmp(cur->data.status, "正常") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    free_schedule_list(sched);
+    return found;
+}
+
 /* ─── 挂号对话框 ──────────────────────────────────────────────────── */
 
 #define IDC_REG_DEPT    3101
@@ -285,6 +340,18 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             int timeSel = (int)SendMessage(hTime, CB_GETCURSEL, 0, 0);
             SendMessageA(hTime, CB_GETLBTEXT, (WPARAM)timeSel, (LPARAM)timeSlot);
 
+            /* ── 日期校验 ── */
+            if (!is_valid_date_str(dateStr)) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "日期格式无效 (例: 2026-05-15)");
+                return 0;
+            }
+            if (!is_date_in_range(dateStr, 7)) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "日期须为今天起 7 天内");
+                return 0;
+            }
+
+            /* ── 排班校验 ── */
+            /* 找医生 ID（先取 deptId 用于排班检查） */
             /* 根据科室名找科室 ID */
             char deptId[20] = {0};
             DepartmentNode *depts = load_departments_list();
@@ -323,6 +390,11 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 
             if (strlen(docId) == 0) {
                 SetDlgItemTextA(hDlg, IDC_REG_STATUS, "未找到医生信息");
+                return 0;
+            }
+
+            if (!doctor_has_schedule(docId, dateStr, timeSlot)) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "该医生此时段无排班");
                 return 0;
             }
 
