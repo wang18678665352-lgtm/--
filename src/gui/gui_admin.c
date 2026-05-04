@@ -1433,8 +1433,8 @@ static void PopulateAnalysisFinancial(HWND hLV) {
         snprintf(reimbStr, sizeof(reimbStr), "%.2f", reimb);
         snprintf(selfStr, sizeof(selfStr), "%.2f", selfPay);
 
-        char monthLabel[16];
-        snprintf(monthLabel, sizeof(monthLabel), "%s (%d笔)", months[i].month, months[i].count);
+        char monthLabel[32];
+        snprintf(monthLabel, sizeof(monthLabel), "%.7s (%d笔)", months[i].month, months[i].count);
 
         const char *items[4] = { monthLabel, totalStr, reimbStr, selfStr };
         AddRow(hLV, row++, 4, items);
