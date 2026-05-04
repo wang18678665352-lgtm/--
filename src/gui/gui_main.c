@@ -226,6 +226,7 @@ static void PopulateNavTree(void) {
             {"紧急标记",        NAV_DOCTOR_EMERGENCY},
             {"进度更新",        NAV_DOCTOR_PROGRESS},
             {"病历模板",        NAV_DOCTOR_TEMPLATE},
+            {"开药",            NAV_DOCTOR_PRESCRIBE},
         };
         for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
             tvis.hParent = hRoot;
@@ -251,6 +252,7 @@ static void PopulateNavTree(void) {
             {"操作日志",   NAV_ADMIN_LOG},
             {"数据管理",   NAV_ADMIN_DATA},
             {"报表统计",   NAV_ADMIN_ANALYSIS},
+            {"重置密码",   NAV_ADMIN_RESETPWD},
         };
         for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
             tvis.hParent = hRoot;
@@ -297,6 +299,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_DOCTOR_EMERGENCY:
     case NAV_DOCTOR_PROGRESS:
     case NAV_DOCTOR_TEMPLATE:
+    case NAV_DOCTOR_PRESCRIBE:
         g_hContentView = CreateDoctorPage(hParent, viewId, &rc);
         break;
     case NAV_ADMIN_DEPT:
@@ -308,6 +311,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_ADMIN_LOG:
     case NAV_ADMIN_DATA:
     case NAV_ADMIN_ANALYSIS:
+    case NAV_ADMIN_RESETPWD:
         g_hContentView = CreateAdminPage(hParent, viewId, &rc);
         break;
     default:

@@ -1326,6 +1326,142 @@ static HWND CreateTemplatePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
+/* ─── 开药页面 ───────────────────────────────────────────────────────── */
+
+static void RefreshPrescribeList(HWND hLV) {
+    ListView_DeleteAllItems(hLV);
+    const char *did = GetDoctorId();
+    if (!did || !did[0]) return;
+
+    MedicalRecordNode *records = load_medical_records_list();
+    if (!records) return;
+
+    int row = 0;
+    for (MedicalRecordNode *mr = records; mr; mr = mr->next) {
+        if (strcmp(mr->data.doctor_id, did) != 0) continue;
+
+        char pn[50] = "未知";
+        PatientNode *pts = load_patients_list();
+        if (pts) {
+            for (PatientNode *p = pts; p; p = p->next) {
+                if (strcmp(p->data.patient_id, mr->data.patient_id) == 0) {
+                    strncpy(pn, p->data.name, sizeof(pn) - 1);
+                    pn[sizeof(pn) - 1] = 0;
+                    break;
+                }
+            }
+            free_patient_list(pts);
+        }
+
+        const char *items[5] = {
+            mr->data.record_id, mr->data.patient_id, pn,
+            mr->data.diagnosis_date, mr->data.status
+        };
+        AddRow(hLV, row++, 5, items);
+    }
+    free_medical_record_list(records);
+}
+
+static LRESULT CALLBACK PrescribePageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        SetWindowLongPtrA(hWnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCT *)lParam)->lpCreateParams);
+        return 0;
+    }
+    case WM_SIZE: {
+        int w = LOWORD(lParam) - 10;
+        int h = HIWORD(lParam) - 10;
+        HWND hLV = GetDlgItem(hWnd, 3801);
+        if (hLV) SetWindowPos(hLV, NULL, 5, 5, w - 10, h - 50, SWP_NOZORDER);
+        HWND hBtn = GetDlgItem(hWnd, 3802);
+        if (hBtn) SetWindowPos(hBtn, NULL, 5, h - 40, 100, 30, SWP_NOZORDER);
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 3802) {
+            HWND hLV = GetDlgItem(hWnd, 3801);
+            if (!hLV) return 0;
+            char recordId[MAX_ID] = "";
+            GetSelectedItemText(hLV, 0, recordId, sizeof(recordId));
+            if (recordId[0] == 0) {
+                MessageBoxA(GetParent(hWnd), "请先选择一个病历", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            const char *did = GetDoctorId();
+            if (!did || !did[0]) {
+                MessageBoxA(GetParent(hWnd), "无法获取医生信息", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            MedicalRecordNode *records = load_medical_records_list();
+            char patientId[MAX_ID] = "";
+            int found = 0;
+            if (records) {
+                for (MedicalRecordNode *mr = records; mr; mr = mr->next) {
+                    if (strcmp(mr->data.record_id, recordId) == 0 &&
+                        strcmp(mr->data.doctor_id, did) == 0) {
+                        strcpy(patientId, mr->data.patient_id);
+                        found = 1;
+                        break;
+                    }
+                }
+                free_medical_record_list(records);
+            }
+
+            if (!found) {
+                MessageBoxA(GetParent(hWnd), "病历不存在或不属于当前医生", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            ConsultData rxData;
+            memset(&rxData, 0, sizeof(rxData));
+            strcpy(rxData.record_id, recordId);
+            strcpy(rxData.patient_id, patientId);
+            strcpy(rxData.doctor_id, did);
+            ShowDrugDispenseDialog(GetParent(hWnd), &rxData);
+
+            PostMessage(GetParent(hWnd), WM_APP_REFRESH, NAV_DOCTOR_PRESCRIBE, 0);
+        }
+        return 0;
+    }
+    default:
+        return DefWindowProcA(hWnd, msg, wParam, lParam);
+    }
+}
+
+static HWND CreatePrescribePage(HWND hParent, RECT *rc) {
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc   = PrescribePageWndProc;
+    wc.hInstance     = g_hInst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = "DocRxPage";
+    RegisterClassA(&wc);
+
+    HWND hPage = CreateWindowExA(0, "DocRxPage", "",
+        WS_VISIBLE | WS_CHILD | WS_CLIPCHILDREN,
+        rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
+        hParent, NULL, g_hInst, (LPVOID)(INT_PTR)NAV_DOCTOR_PRESCRIBE);
+    if (!hPage) return NULL;
+
+    int w = (rc->right - rc->left) - 10;
+    int h = (rc->bottom - rc->top) - 10;
+
+    HWND hLV = CreateListView(hPage, 3801, 5, 5, w - 10, h - 50);
+    AddCol(hLV, 0, "病历ID", 100);
+    AddCol(hLV, 1, "患者ID", 100);
+    AddCol(hLV, 2, "患者姓名", 120);
+    AddCol(hLV, 3, "诊断日期", 100);
+    AddCol(hLV, 4, "状态", 80);
+
+    CreateWindowA("BUTTON", "开药",
+        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        5, h - 40, 100, 30, hPage, (HMENU)3802, g_hInst, NULL);
+
+    RefreshPrescribeList(hLV);
+    return hPage;
+}
+
 /* ─── 公开接口 ───────────────────────────────────────────────────────── */
 
 HWND CreateDoctorPage(HWND hParent, int viewId, RECT *rc) {
@@ -1336,6 +1472,7 @@ HWND CreateDoctorPage(HWND hParent, int viewId, RECT *rc) {
     case NAV_DOCTOR_EMERGENCY:    return CreateEmergencyPage(hParent, rc);
     case NAV_DOCTOR_PROGRESS:     return CreateProgressPage(hParent, rc);
     case NAV_DOCTOR_TEMPLATE:     return CreateTemplatePage(hParent, rc);
+    case NAV_DOCTOR_PRESCRIBE:    return CreatePrescribePage(hParent, rc);
     default: return NULL;
     }
 }

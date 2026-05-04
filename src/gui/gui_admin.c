@@ -4,6 +4,7 @@
 #include "../public.h"
 #include <time.h>
 #include <stdio.h>
+#include "../sha256.h"
 
 /* ─── ListView 工具 ─────────────────────────────────────────────────── */
 
@@ -40,6 +41,16 @@ static void AddRow(HWND hLV, int row, int cols, const char **items) {
 
 static void ClearLV(HWND hLV) {
     ListView_DeleteAllItems(hLV);
+}
+
+/* 获取选中的 ListView 首列表格文本 */
+static void GetSelectedItemText(HWND hLV, int col, char *buf, int size) {
+    int sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
+    if (sel >= 0) {
+        ListView_GetItemText(hLV, sel, col, buf, size);
+    } else {
+        buf[0] = 0;
+    }
 }
 
 /* ─── 字体 ─────────────────────────────────────────────────────────── */
@@ -1540,6 +1551,184 @@ static HWND CreateAnalysisPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
+/* ─── 重置密码页面 ───────────────────────────────────────────────────── */
+
+static LRESULT CALLBACK ResetPwdDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCT *cs = (CREATESTRUCT *)lParam;
+        SetWindowLongPtrA(hDlg, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        RECT rc; GetClientRect(hDlg, &rc);
+        int w = rc.right - rc.left;
+        int y = 20;
+
+        CreateWindowA("STATIC", "目标用户:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, 10, y + 2, 80, 20, hDlg, NULL, g_hInst, NULL);
+        HWND hUser = CreateWindowA("EDIT", (const char *)cs->lpCreateParams,
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_READONLY,
+            100, y, w - 130, 22, hDlg, (HMENU)4901, g_hInst, NULL);
+        SendMessageA(hUser, EM_SETLIMITTEXT, 49, 0);
+        y += 35;
+
+        CreateWindowA("STATIC", "新密码:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, 10, y + 2, 80, 20, hDlg, NULL, g_hInst, NULL);
+        CreateWindowA("EDIT", "",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            100, y, w - 130, 22, hDlg, (HMENU)4902, g_hInst, NULL);
+        y += 35;
+
+        CreateWindowA("STATIC", "确认密码:",
+            WS_VISIBLE | WS_CHILD | SS_RIGHT, 10, y + 2, 80, 20, hDlg, NULL, g_hInst, NULL);
+        CreateWindowA("EDIT", "",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            100, y, w - 130, 22, hDlg, (HMENU)4903, g_hInst, NULL);
+        y += 45;
+
+        CreateWindowA("BUTTON", "确定",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            w / 2 - 110, y, 100, 28, hDlg, (HMENU)4904, g_hInst, NULL);
+        CreateWindowA("BUTTON", "取消",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            w / 2 + 10, y, 100, 28, hDlg, (HMENU)4905, g_hInst, NULL);
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 4904) {
+            char newPwd[256], confirmPwd[256];
+            GetDlgItemTextA(hDlg, 4902, newPwd, sizeof(newPwd));
+            GetDlgItemTextA(hDlg, 4903, confirmPwd, sizeof(confirmPwd));
+            if (strlen(newPwd) == 0) {
+                MessageBoxA(hDlg, "密码不能为空", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+            if (strcmp(newPwd, confirmPwd) != 0) {
+                MessageBoxA(hDlg, "两次输入的密码不一致", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            char username[256];
+            GetDlgItemTextA(hDlg, 4901, username, sizeof(username));
+
+            UserNode *head = load_users_list();
+            UserNode *target = NULL;
+            for (UserNode *cur = head; cur; cur = cur->next) {
+                if (strcmp(cur->data.username, username) == 0) {
+                    target = cur;
+                    break;
+                }
+            }
+            if (!target) {
+                free_user_list(head);
+                MessageBoxA(hDlg, "未找到该用户", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            uint8_t hash[SHA256_DIGEST_SIZE];
+            char hex[SHA256_HEX_SIZE];
+            sha256_hash((const uint8_t *)newPwd, strlen(newPwd), hash);
+            sha256_hex(hash, hex);
+            strcpy(target->data.password, hex);
+
+            int ret = save_users_list(head);
+            free_user_list(head);
+            if (ret == SUCCESS) {
+                append_log(g_currentUser.username, "重置密码", "user", username, "");
+                DestroyWindow(hDlg);
+                PostMessage(GetParent(hDlg), WM_APP_REFRESH, NAV_ADMIN_RESETPWD, 0);
+            } else {
+                MessageBoxA(hDlg, "保存失败", "错误", MB_OK | MB_ICONERROR);
+            }
+            return 0;
+        }
+        if (LOWORD(wParam) == 4905) {
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        DestroyWindow(hDlg);
+        return 0;
+    default:
+        return DefWindowProcA(hDlg, msg, wParam, lParam);
+    }
+}
+
+static LRESULT CALLBACK ResetPwdPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        SetWindowLongPtrA(hWnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCT *)lParam)->lpCreateParams);
+        return 0;
+    }
+    case WM_SIZE: {
+        int w = LOWORD(lParam) - 10;
+        int h = HIWORD(lParam) - 10;
+        HWND hLV = GetDlgItem(hWnd, 4805);
+        if (hLV) SetWindowPos(hLV, NULL, 5, 5, w - 10, h - 50, SWP_NOZORDER);
+        HWND hBtn = GetDlgItem(hWnd, 4806);
+        if (hBtn) SetWindowPos(hBtn, NULL, 5, h - 40, 120, 30, SWP_NOZORDER);
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 4806) {
+            HWND hLV = GetDlgItem(hWnd, 4805);
+            if (!hLV) return 0;
+            char username[256] = "";
+            GetSelectedItemText(hLV, 0, username, sizeof(username));
+            if (username[0] == 0) {
+                MessageBoxA(GetParent(hWnd), "请先选择一个用户", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            DialogBoxParamA(g_hInst, "EDITPASS", GetParent(hWnd), ResetPwdDlgProc, (LPARAM)username);
+            PostMessage(GetParent(hWnd), WM_APP_REFRESH, NAV_ADMIN_RESETPWD, 0);
+        }
+        return 0;
+    }
+    default:
+        return DefWindowProcA(hWnd, msg, wParam, lParam);
+    }
+}
+
+static HWND CreateResetPwdPage(HWND hParent, RECT *rc) {
+    WNDCLASSA wc = {0};
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = ResetPwdPageWndProc;
+    wc.hInstance     = g_hInst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = "AdminPwdPage";
+    RegisterClassA(&wc);
+
+    HWND hPage = CreateWindowExA(0, "AdminPwdPage", "",
+        WS_VISIBLE | WS_CHILD | WS_CLIPCHILDREN,
+        rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
+        hParent, NULL, g_hInst, (LPVOID)(INT_PTR)NAV_ADMIN_RESETPWD);
+    if (!hPage) return NULL;
+
+    int w = (rc->right - rc->left) - 10;
+    int h = (rc->bottom - rc->top) - 10;
+
+    HWND hLV = CreateListView(hPage, 4805, 5, 5, w - 10, h - 50);
+    AddCol(hLV, 0, "用户名", 150);
+    AddCol(hLV, 1, "角色", 100);
+
+    UserNode *users = load_users_list();
+    if (users) {
+        int row = 0;
+        for (UserNode *cur = users; cur; cur = cur->next) {
+            const char *items[2] = { cur->data.username, cur->data.role };
+            AddRow(hLV, row++, 2, items);
+        }
+        free_user_list(users);
+    }
+
+    CreateWindowA("BUTTON", "重置密码",
+        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        5, h - 40, 120, 30, hPage, (HMENU)4806, g_hInst, NULL);
+
+    return hPage;
+}
+
 /* ─── 公开接口 ─────────────────────────────────────────────────────── */
 
 HWND CreateAdminPage(HWND hParent, int viewId, RECT *rc) {
@@ -1553,6 +1742,7 @@ HWND CreateAdminPage(HWND hParent, int viewId, RECT *rc) {
     case NAV_ADMIN_LOG:      return CreateLogPage(hParent, rc);
     case NAV_ADMIN_DATA:     return CreateDataPage(hParent, rc);
     case NAV_ADMIN_ANALYSIS: return CreateAnalysisPage(hParent, rc);
+    case NAV_ADMIN_RESETPWD: return CreateResetPwdPage(hParent, rc);
     default: return NULL;
     }
 }

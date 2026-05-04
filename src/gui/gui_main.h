@@ -46,6 +46,7 @@ enum {
     NAV_DOCTOR_EMERGENCY,
     NAV_DOCTOR_PROGRESS,
     NAV_DOCTOR_TEMPLATE,
+    NAV_DOCTOR_PRESCRIBE,
 };
 
 /* 管理员导航 */
@@ -59,6 +60,7 @@ enum {
     NAV_ADMIN_LOG,
     NAV_ADMIN_DATA,
     NAV_ADMIN_ANALYSIS,
+    NAV_ADMIN_RESETPWD,
 };
 
 /* 主窗口函数 */
