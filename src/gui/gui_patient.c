@@ -233,9 +233,25 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 
         CreateWindowA("STATIC", "日期:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
-        CreateWindowA(DATETIMEPICK_CLASSA, "",
+        HWND hDate = CreateWindowA(DATETIMEPICK_CLASSA, "",
             WS_VISIBLE|WS_CHILD|DTS_SHORTDATEFORMAT,
             110, y, 150, 22, hDlg, (HMENU)IDC_REG_DATE, g_hInst, NULL);
+        /* 设置可选范围：今天 ~ 今天+7天 */
+        {
+            SYSTEMTIME stRange[2];
+            memset(&stRange, 0, sizeof(stRange));
+            SYSTEMTIME stNow;
+            GetLocalTime(&stNow);
+            stRange[0].wYear = stNow.wYear;
+            stRange[0].wMonth = stNow.wMonth;
+            stRange[0].wDay = stNow.wDay;
+            time_t t = time(NULL) + 7 * 86400;
+            struct tm *tmMax = localtime(&t);
+            stRange[1].wYear = tmMax->tm_year + 1900;
+            stRange[1].wMonth = tmMax->tm_mon + 1;
+            stRange[1].wDay = tmMax->tm_mday;
+            SendMessage(hDate, DTM_SETRANGE, GDTR_MIN | GDTR_MAX, (LPARAM)stRange);
+        }
 
         CreateWindowA("STATIC", "时段:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
