@@ -230,27 +230,23 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             free_doctor_list(docs);
         }
         y += 30;
-
         CreateWindowA("STATIC", "日期:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
-        HWND hDate = CreateWindowA(DATETIMEPICK_CLASSA, "",
-            WS_VISIBLE|WS_CHILD|DTS_SHORTDATEFORMAT,
-            110, y, 150, 22, hDlg, (HMENU)IDC_REG_DATE, g_hInst, NULL);
-        /* 设置可选范围：今天 ~ 今天+7天 */
+        HWND hDate = CreateWindowA("COMBOBOX", "",
+            WS_VISIBLE|WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL|CBS_HASSTRINGS,
+            110, y, 150, 150, hDlg, (HMENU)IDC_REG_DATE, g_hInst, NULL);
+        /* 生成可选日期：今天 ~ 今天+6天 */
         {
-            SYSTEMTIME stRange[2];
-            memset(&stRange, 0, sizeof(stRange));
-            SYSTEMTIME stNow;
-            GetLocalTime(&stNow);
-            stRange[0].wYear = stNow.wYear;
-            stRange[0].wMonth = stNow.wMonth;
-            stRange[0].wDay = stNow.wDay;
-            time_t t = time(NULL) + 7 * 86400;
-            struct tm *tmMax = localtime(&t);
-            stRange[1].wYear = tmMax->tm_year + 1900;
-            stRange[1].wMonth = tmMax->tm_mon + 1;
-            stRange[1].wDay = tmMax->tm_mday;
-            SendMessage(hDate, DTM_SETRANGE, GDTR_MIN | GDTR_MAX, (LPARAM)stRange);
+            time_t t = time(NULL);
+            for (int i = 0; i < 7; i++) {
+                struct tm *tm = localtime(&t);
+                char buf[20];
+                snprintf(buf, sizeof(buf), "%d月%d日",
+                         tm->tm_mon + 1, tm->tm_mday);
+                SendMessageA(hDate, CB_ADDSTRING, 0, (LPARAM)buf);
+                t += 86400;
+            }
+            SendMessage(hDate, CB_SETCURSEL, 0, 0);
         }
 
         CreateWindowA("STATIC", "时段:", WS_VISIBLE|WS_CHILD,
@@ -328,21 +324,19 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             SendMessageA(hDept, CB_GETLBTEXT, (WPARAM)deptSel, (LPARAM)deptName);
             char docLabel[150] = {0};
             SendMessageA(hDoc, CB_GETLBTEXT, (WPARAM)docSel, (LPARAM)docLabel);
-            char timeSlot[10] = {0};
+            char timeSlot[16] = {0};
             HWND hTime = GetDlgItem(hDlg, IDC_REG_TIME);
             int timeSel = (int)SendMessage(hTime, CB_GETCURSEL, 0, 0);
             SendMessageA(hTime, CB_GETLBTEXT, (WPARAM)timeSel, (LPARAM)timeSlot);
 
-            /* ── 从日期控件获取日期 ── */
-            SYSTEMTIME st;
-            memset(&st, 0, sizeof(st));
-            SendMessage(GetDlgItem(hDlg, IDC_REG_DATE), DTM_GETSYSTEMTIME, 0, (LPARAM)&st);
+            /* 从日期下拉框获取日期 */
+            int dateSel = (int)SendMessage(GetDlgItem(hDlg, IDC_REG_DATE), CB_GETCURSEL, 0, 0);
             char dateStr[20] = {0};
-            snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
-
-            if (!is_date_in_range(dateStr, 7)) {
-                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "日期须为今天起 7 天内");
-                return 0;
+            if (dateSel != CB_ERR) {
+                time_t t = time(NULL) + dateSel * 86400;
+                struct tm *tm = localtime(&t);
+                snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
+                         tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
             }
 
             /* ── 排班校验 ── */
