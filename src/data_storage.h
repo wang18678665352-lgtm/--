@@ -131,7 +131,7 @@ typedef struct {
     char schedule_id[MAX_ID];
     char doctor_id[MAX_ID];
     char work_date[12];
-    char time_slot[10];
+    char time_slot[16];
     int max_appt;
     int max_onsite;
     char status[10];

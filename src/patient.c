@@ -201,7 +201,7 @@ static int patient_standard_register_menu(const User *current_user) {
     DoctorNode *doctor_head = NULL;
     DoctorNode *current_doc = NULL;
     int result;
-    char time_slot[10];
+    char time_slot[16];
     DoctorNode *dept_doctors = NULL;
     int has_doctors = 0;
 
@@ -319,15 +319,22 @@ static int patient_standard_register_menu(const User *current_user) {
 
     // Step 5: 选择时间段
     ui_sub_header("选择时间段");
-    ui_menu_item(1, "上午 (08:00-12:00)");
-    ui_menu_item(2, "下午 (14:00-18:00)");
+    const char *slot_names[7] = {
+        "08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00",
+        "14:00-15:00", "15:00-16:00", "16:00-17:00"
+    };
+    for (int si = 0; si < 7; si++)
+        ui_menu_item(si + 1, slot_names[si]);
+     
+     
     ui_divider();
     ui_menu_exit(0, "返回");
-    int slot_choice = get_menu_choice(0, 2);
+    int slot_choice = get_menu_choice(0, 7);
     if (slot_choice == 0) {
         return ERROR_INVALID_INPUT;
     }
-    strcpy(time_slot, (slot_choice == 1) ? "上午" : "下午");
+    if (slot_choice >= 1 && slot_choice <= 7)
+            strcpy(time_slot, slot_names[slot_choice - 1]);
 
     // 检查该时段是否还有剩余号
     int current_count = count_appointments_for_slot(selected_doc.doctor_id, selected_date, time_slot);

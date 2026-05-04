@@ -1274,7 +1274,7 @@ int admin_schedule_menu(const User *current_user) {
         doc_id[strcspn(doc_id, "\n")] = 0;
         printf("日期(YYYY-MM-DD): "); if (!fgets(date, sizeof(date), stdin)) return ERROR_INVALID_INPUT;
         date[strcspn(date, "\n")] = 0;
-        printf("时段(上午/下午): "); if (!fgets(slot, sizeof(slot), stdin)) return ERROR_INVALID_INPUT;
+        printf("时段(如08:00-09:00): "); if (!fgets(slot, sizeof(slot), stdin)) return ERROR_INVALID_INPUT;
         slot[strcspn(slot, "\n")] = 0;
         generate_id(id, sizeof(id), "SCH");
         memset(&sched, 0, sizeof(sched));

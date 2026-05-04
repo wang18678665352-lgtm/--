@@ -258,8 +258,13 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
         HWND hTime = CreateWindowA("COMBOBOX", "",
             WS_VISIBLE|WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL|CBS_HASSTRINGS,
             110, y, 150, 100, hDlg, (HMENU)IDC_REG_TIME, g_hInst, NULL);
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"上午");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"下午");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"08:00-09:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"09:00-10:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"10:00-11:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"11:00-12:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"14:00-15:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"15:00-16:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"16:00-17:00");
         SendMessage(hTime, CB_SETCURSEL, 0, 0);
         y += 35;
 

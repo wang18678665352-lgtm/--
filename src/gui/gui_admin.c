@@ -810,7 +810,7 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 FieldDef f[3] = {
                     {"医生ID", "", MAX_ID, FALSE},
                     {"日期", "", 12, FALSE},
-                    {"时段", "", 10, FALSE},
+                    {"时段(如08:00-09:00)", "", 16, FALSE},
                 };
                 if (ShowFieldDialog(hWnd, "生成排班", f, 3)) {
                     Schedule s;
