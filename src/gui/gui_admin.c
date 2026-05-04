@@ -511,17 +511,27 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                     {"患者类型", "", 20, FALSE},
                     {"治疗阶段", "", 20, FALSE},
                 };
-                /* 跳过第 0 列(ID)，从第 1 列开始读 */
                 sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
                 char idBuf[MAX_ID] = {0};
                 ListView_GetItemText(hLV, sel, 0, idBuf, sizeof(idBuf));
-                ListView_GetItemText(hLV, sel, 1, f[0].value, f[0].max_len);
-                ListView_GetItemText(hLV, sel, 2, f[1].value, f[1].max_len);
-                ListView_GetItemText(hLV, sel, 3, f[2].value, f[2].max_len);
-                ListView_GetItemText(hLV, sel, 4, f[3].value, f[3].max_len);
-                ListView_GetItemText(hLV, sel, 5, f[4].value, f[4].max_len);
-                ListView_GetItemText(hLV, sel, 6, f[5].value, f[5].max_len);
-                /* treatment_stage is col 6, we skip "年龄" remapping — keep it simple */
+                /* 从患者数据加载用户名（ListView 无此列） */
+                {
+                    PatientNode *ph = load_patients_list();
+                    for (PatientNode *pc = ph; pc; pc = pc->next) {
+                        if (strcmp(pc->data.patient_id, idBuf) == 0) {
+                            strcpy(f[0].value, pc->data.username);
+                            break;
+                        }
+                    }
+                    free_patient_list(ph);
+                }
+                /* 从 ListView 读取，col 1-6 对应 f[1]-f[6] */
+                ListView_GetItemText(hLV, sel, 1, f[1].value, f[1].max_len);
+                ListView_GetItemText(hLV, sel, 2, f[2].value, f[2].max_len);
+                ListView_GetItemText(hLV, sel, 3, f[3].value, f[3].max_len);
+                ListView_GetItemText(hLV, sel, 4, f[4].value, f[4].max_len);
+                ListView_GetItemText(hLV, sel, 5, f[5].value, f[5].max_len);
+                ListView_GetItemText(hLV, sel, 6, f[6].value, f[6].max_len);
                 if (ShowFieldDialog(hWnd, "编辑患者", f, 7)) {
                     PatientNode *head = load_patients_list();
                     for (PatientNode *cur = head; cur; cur = cur->next) {
