@@ -141,19 +141,6 @@ static int ShowPatFieldDialog(HWND hParent, const char *title,
     return g_pfResult == 1;
 }
 
-/* ─── 日期校验工具 ──────────────────────────────────────────────────── */
-
-static int is_valid_date_str(const char *str) {
-    int y, m, d;
-    if (sscanf(str, "%d-%d-%d", &y, &m, &d) != 3) return 0;
-    if (m < 1 || m > 12 || d < 1) return 0;
-    /* 各月天数 */
-    int dim[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-    if ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) dim[1] = 29;
-    if (d > dim[m - 1]) return 0;
-    return 1;
-}
-
 /* 检查 dateStr(YYYY-MM-DD) 是否在 [today, today+maxDays] 范围内 */
 static int is_date_in_range(const char *dateStr, int maxDays) {
     time_t now = time(NULL);
@@ -194,24 +181,6 @@ static int doctor_has_schedule(const char *docId, const char *date, const char *
     }
     free_schedule_list(sched);
     return found;
-}
-
-/* ─── 日期输入框子类化，只允许数字和连字符 ──────────────────────────── */
-
-static WNDPROC g_oldDateEditProc = NULL;
-
-static LRESULT CALLBACK DateEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_CHAR) {
-        if ((wParam >= '0' && wParam <= '9') || wParam == '-' || wParam == VK_BACK)
-            return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
-        /* 允许 Ctrl+A/C/V/X/Z */
-        if (wParam == 0x01 || wParam == 0x03 || wParam == 0x16 ||
-            wParam == 0x18 || wParam == 0x1A)
-            return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
-        MessageBeep(0);
-        return 0;
-    }
-    return CallWindowProcA(g_oldDateEditProc, hWnd, msg, wParam, lParam);
 }
 
 /* ─── 挂号对话框 ──────────────────────────────────────────────────── */
@@ -264,14 +233,9 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 
         CreateWindowA("STATIC", "日期:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
-        HWND hDateEdit = CreateWindowA("EDIT", "",
-            WS_VISIBLE|WS_CHILD|WS_BORDER|ES_AUTOHSCROLL,
+        CreateWindowA(DATETIMEPICK_CLASSA, "",
+            WS_VISIBLE|WS_CHILD|DTS_SHORTDATEFORMAT,
             110, y, 150, 22, hDlg, (HMENU)IDC_REG_DATE, g_hInst, NULL);
-        g_oldDateEditProc = (WNDPROC)SetWindowLongPtrA(hDateEdit, GWLP_WNDPROC, (LONG_PTR)DateEditSubclassProc);
-
-        CreateWindowA("STATIC", "格式 YYYY-MM-DD", WS_VISIBLE|WS_CHILD,
-            270, y+2, 120, 20, hDlg, NULL, g_hInst, NULL);
-        y += 30;
 
         CreateWindowA("STATIC", "时段:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
@@ -338,32 +302,23 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            char dateStr[20] = {0};
-            GetDlgItemTextA(hDlg, IDC_REG_DATE, dateStr, sizeof(dateStr));
-            if (strlen(dateStr) == 0) {
-                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "请输入日期");
-                return 0;
-            }
-
-            char timeStr[10] = {0};
-            SendMessageA(hDoc, CB_GETLBTEXT, (WPARAM)docSel, (LPARAM)timeStr);
-            /* 从 "姓名 - 职称" 中提取医生 ID */
-            char docLabel[150] = {0};
-            SendMessageA(hDoc, CB_GETLBTEXT, (WPARAM)docSel, (LPARAM)docLabel);
-
+            /* 从标签中提取科室名、医生名、时段 */
             char deptName[100] = {0};
             SendMessageA(hDept, CB_GETLBTEXT, (WPARAM)deptSel, (LPARAM)deptName);
-
+            char docLabel[150] = {0};
+            SendMessageA(hDoc, CB_GETLBTEXT, (WPARAM)docSel, (LPARAM)docLabel);
             char timeSlot[10] = {0};
             HWND hTime = GetDlgItem(hDlg, IDC_REG_TIME);
             int timeSel = (int)SendMessage(hTime, CB_GETCURSEL, 0, 0);
             SendMessageA(hTime, CB_GETLBTEXT, (WPARAM)timeSel, (LPARAM)timeSlot);
 
-            /* ── 日期校验 ── */
-            if (!is_valid_date_str(dateStr)) {
-                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "日期格式无效 (例: 2026-05-15)");
-                return 0;
-            }
+            /* ── 从日期控件获取日期 ── */
+            SYSTEMTIME st;
+            memset(&st, 0, sizeof(st));
+            SendMessage(GetDlgItem(hDlg, IDC_REG_DATE), DTM_GETSYSTEMTIME, 0, (LPARAM)&st);
+            char dateStr[20] = {0};
+            snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+
             if (!is_date_in_range(dateStr, 7)) {
                 SetDlgItemTextA(hDlg, IDC_REG_STATUS, "日期须为今天起 7 天内");
                 return 0;
