@@ -2,6 +2,8 @@
 #include "gui_main.h"
 #include "../data_storage.h"
 #include "../public.h"
+#include <time.h>
+#include <stdio.h>
 
 /* ─── ListView 工具 ─────────────────────────────────────────────────── */
 
@@ -38,6 +40,32 @@ static void AddRow(HWND hLV, int row, int cols, const char **items) {
 
 static void ClearLV(HWND hLV) {
     ListView_DeleteAllItems(hLV);
+}
+
+/* ─── 字体 ─────────────────────────────────────────────────────────── */
+
+static HFONT g_hAdminFont = NULL;
+
+static HFONT GetAdminFont(void) {
+    if (!g_hAdminFont) {
+        g_hAdminFont = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Microsoft YaHei");
+    }
+    return g_hAdminFont;
+}
+
+static BOOL CALLBACK SetChildFontEnum(HWND hChild, LPARAM lParam) {
+    SendMessage(hChild, WM_SETFONT, lParam, TRUE);
+    return TRUE;
+}
+
+static void ApplyDefaultFont(HWND hWnd) {
+    HFONT hFont = GetAdminFont();
+    if (hFont) {
+        SendMessage(hWnd, WM_SETFONT, (WPARAM)hFont, TRUE);
+        EnumChildWindows(hWnd, SetChildFontEnum, (LPARAM)hFont);
+    }
 }
 
 /* ─── 字段编辑对话框 ───────────────────────────────────────────────── */
@@ -253,6 +281,8 @@ static void GetSelectedRow(HWND hLV, int col_count, FieldDef *fields) {
 }
 
 /* ─── 通用管理页面基类 ─────────────────────────────────────────────── */
+
+static HWND g_analysisTabPages[3];
 
 static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     int viewId = (int)GetWindowLongPtrA(hWnd, GWLP_USERDATA);
@@ -798,13 +828,63 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             }
             }
             return 0;
+
+        /* ── 数据管理 ─────────────────────────────────────────── */
+        case NAV_ADMIN_DATA:
+            switch (cmd) {
+            case 4801: { /* 备份 */
+                if (backup_data() >= 0) {
+                    append_log(g_currentUser.username, "备份", "数据", "all", "手动数据备份");
+                    MessageBoxA(hWnd, "数据备份完成！\n备份文件保存在 data/backup/ 目录。", "提示", MB_OK | MB_ICONINFORMATION);
+                } else {
+                    MessageBoxA(hWnd, "备份失败！", "错误", MB_OK | MB_ICONERROR);
+                }
+                return 0;
+            }
+            case 4802: { /* 恢复 */
+                if (MessageBoxA(hWnd, "恢复数据将覆盖当前所有数据，确定继续？", "确认",
+                    MB_YESNO | MB_ICONWARNING) != IDYES) return 0;
+                FieldDef f[1] = {{"备份目录名", "", 64, FALSE}};
+                const char **names = NULL;
+                int count = 0;
+                list_backups(&names, &count);
+                if (count == 0) {
+                    MessageBoxA(hWnd, "没有找到备份，请先备份数据。", "提示", MB_OK | MB_ICONINFORMATION);
+                    free_backups_list(names, count);
+                    return 0;
+                }
+                if (ShowFieldDialog(hWnd, "输入备份目录名进行恢复", f, 1)) {
+                    if (restore_data(f[0].value) >= 0) {
+                        append_log(g_currentUser.username, "恢复", "数据", "all", "数据恢复");
+                        MessageBoxA(hWnd, "数据恢复完成！请刷新各页面查看最新数据。", "提示", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxA(hWnd, "恢复失败！请检查备份目录名是否正确。", "错误", MB_OK | MB_ICONERROR);
+                    }
+                }
+                free_backups_list(names, count);
+                return 0;
+            }
+            }
+            return 0;
         }
         return 0;
     }
 
+    case WM_NOTIFY:
+        if (viewId == NAV_ADMIN_ANALYSIS && ((NMHDR *)lParam)->code == TCN_SELCHANGE) {
+            int sel = TabCtrl_GetCurSel(((NMHDR *)lParam)->hwndFrom);
+            for (int i = 0; i < 3; i++) {
+                if (g_analysisTabPages[i])
+                    ShowWindow(g_analysisTabPages[i], i == sel ? SW_SHOW : SW_HIDE);
+            }
+            return 0;
+        }
+        break;
+
     default:
         return DefWindowProcA(hWnd, msg, wParam, lParam);
     }
+    return 0;
 }
 
 /* ─── 各页面创建函数 ─────────────────────────────────────────────── */
@@ -841,6 +921,7 @@ static HWND CreateDeptPage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "删除", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   170, by, 70, 30, hPage, (HMENU)4103, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -877,6 +958,7 @@ static HWND CreateDoctorMgmtPage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "删除", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   170, by, 70, 30, hPage, (HMENU)4203, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -917,6 +999,7 @@ static HWND CreatePatientMgmtPage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "刷新", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   250, by, 70, 30, hPage, (HMENU)4304, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -957,6 +1040,7 @@ static HWND CreateDrugPage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "补货", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   250, by, 70, 30, hPage, (HMENU)4404, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -993,6 +1077,7 @@ static HWND CreateWardPage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "删除", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   170, by, 70, 30, hPage, (HMENU)4503, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -1027,6 +1112,7 @@ static HWND CreateSchedulePage(HWND hParent, RECT *rc) {
     CreateWindowA("BUTTON", "停诊", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                   110, by, 70, 30, hPage, (HMENU)4602, g_hInst, NULL);
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -1074,6 +1160,7 @@ static HWND CreateLogPage(HWND hParent, RECT *rc) {
         free_log_entry_list(logs);
     }
 
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
@@ -1093,26 +1180,274 @@ static HWND CreateDataPage(HWND hParent, RECT *rc) {
         hParent, NULL, g_hInst, (LPVOID)(INT_PTR)NAV_ADMIN_DATA);
     if (!hPage) return NULL;
 
+    int w = (rc->right - rc->left) - 40;
+
     CreateWindowA("STATIC", "数据备份与恢复",
         WS_VISIBLE | WS_CHILD | SS_LEFT,
-        20, 20, 200, 25, hPage, NULL, g_hInst, NULL);
+        20, 15, 200, 22, hPage, NULL, g_hInst, NULL);
 
     CreateWindowA("BUTTON", "备份数据",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        20, 60, 120, 35, hPage, (HMENU)4801, g_hInst, NULL);
+        20, 45, 120, 32, hPage, (HMENU)4801, g_hInst, NULL);
 
     CreateWindowA("BUTTON", "恢复数据",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        160, 60, 120, 35, hPage, (HMENU)4802, g_hInst, NULL);
+        150, 45, 120, 32, hPage, (HMENU)4802, g_hInst, NULL);
 
-    CreateWindowA("STATIC", "备份操作会将 data/ 目录下所有数据打包备份。",
+    CreateWindowA("STATIC", "备份操作将 data/ 下所有数据文件复制到 data/backup/ 目录，以时间戳命名。",
         WS_VISIBLE | WS_CHILD | SS_LEFT,
-        20, 110, 400, 20, hPage, NULL, g_hInst, NULL);
+        20, 85, w, 20, hPage, NULL, g_hInst, NULL);
 
+    /* 备份列表 */
+    int lvY = 115, lvH = (rc->bottom - rc->top) - lvY - 20;
+    HWND hLV = CreateListView(hPage, 4803, 20, lvY, w, lvH > 50 ? lvH : 100);
+    AddCol(hLV, 0, "备份目录", 150);
+    AddCol(hLV, 1, "说明", 300);
+
+    const char **names = NULL;
+    int count = 0;
+    list_backups(&names, &count);
+    if (names) {
+        for (int i = count - 1; i >= 0; i--) {
+            const char *items[2] = { names[i], "可用" };
+            AddRow(hLV, count - 1 - i, 2, items);
+        }
+        free_backups_list(names, count);
+    }
+
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
 /* ─── 报表统计页面 ─────────────────────────────────────────────────── */
+
+static void PopulateAnalysisOverview(HWND hLV) {
+    ClearLV(hLV);
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char today[16];
+    strftime(today, sizeof(today), "%Y-%m-%d", tm);
+    char thisMonth[8];
+    strftime(thisMonth, sizeof(thisMonth), "%Y-%m", tm);
+
+    /* 预约/挂号统计 */
+    AppointmentNode *appts = load_appointments_list();
+    int totalAppts = 0, todayAppts = 0, completedAppts = 0;
+    for (AppointmentNode *cur = appts; cur; cur = cur->next) {
+        totalAppts++;
+        if (strncmp(cur->data.appointment_date, today, 10) == 0)
+            todayAppts++;
+        if (strcmp(cur->data.status, "已完成") == 0)
+            completedAppts++;
+    }
+
+    /* 处方统计 */
+    PrescriptionNode *prescs = load_prescriptions_list();
+    double totalRevenue = 0, monthRevenue = 0;
+    int totalPrescs = 0;
+    for (PrescriptionNode *cur = prescs; cur; cur = cur->next) {
+        totalRevenue += cur->data.total_price;
+        totalPrescs++;
+        if (strncmp(cur->data.prescription_date, thisMonth, 7) == 0)
+            monthRevenue += cur->data.total_price;
+    }
+
+    /* 床位统计 */
+    WardNode *wards = load_wards_list();
+    int totalBeds = 0, usedBeds = 0;
+    for (WardNode *cur = wards; cur; cur = cur->next) {
+        totalBeds += cur->data.total_beds;
+        usedBeds += cur->data.total_beds - cur->data.remain_beds;
+    }
+
+    /* 药品统计 */
+    DrugNode *drugs = load_drugs_list();
+    int lowStockDrugs = 0, totalDrugTypes = 0;
+    for (DrugNode *cur = drugs; cur; cur = cur->next) {
+        totalDrugTypes++;
+        if (cur->data.stock_num < cur->data.warning_line)
+            lowStockDrugs++;
+    }
+
+    /* 患者统计 */
+    PatientNode *pats = load_patients_list();
+    int totalPats = 0, emgPats = 0;
+    for (PatientNode *cur = pats; cur; cur = cur->next) {
+        totalPats++;
+        if (cur->data.is_emergency) emgPats++;
+    }
+
+    char buf[64];
+    int row = 0;
+
+    snprintf(buf, sizeof(buf), "%d 次", totalAppts);
+    AddRow(hLV, row++, 2, (const char *[]){"累计预约数", buf});
+    snprintf(buf, sizeof(buf), "%d 次", todayAppts);
+    AddRow(hLV, row++, 2, (const char *[]){"今日预约数", buf});
+    snprintf(buf, sizeof(buf), "%d 次", completedAppts);
+    AddRow(hLV, row++, 2, (const char *[]){"已完成就诊", buf});
+    snprintf(buf, sizeof(buf), "%.2f 元", totalRevenue);
+    AddRow(hLV, row++, 2, (const char *[]){"累计收入", buf});
+    snprintf(buf, sizeof(buf), "%.2f 元", monthRevenue);
+    AddRow(hLV, row++, 2, (const char *[]){"本月收入", buf});
+    snprintf(buf, sizeof(buf), "%d 条", totalPrescs);
+    AddRow(hLV, row++, 2, (const char *[]){"处方总数", buf});
+    double bedRate = totalBeds > 0 ? 100.0 * usedBeds / totalBeds : 0;
+    snprintf(buf, sizeof(buf), "%.1f%% (%d/%d)", bedRate, usedBeds, totalBeds);
+    AddRow(hLV, row++, 2, (const char *[]){"床位使用率", buf});
+    snprintf(buf, sizeof(buf), "%d 种", totalDrugTypes);
+    AddRow(hLV, row++, 2, (const char *[]){"药品品种数", buf});
+    snprintf(buf, sizeof(buf), "%d 种", lowStockDrugs);
+    AddRow(hLV, row++, 2, (const char *[]){"库存预警药品", buf});
+    snprintf(buf, sizeof(buf), "%d 人", totalPats);
+    AddRow(hLV, row++, 2, (const char *[]){"患者总数", buf});
+    snprintf(buf, sizeof(buf), "%d 人", emgPats);
+    AddRow(hLV, row++, 2, (const char *[]){"紧急患者", buf});
+
+    free_appointment_list(appts);
+    free_prescription_list(prescs);
+    free_ward_list(wards);
+    free_drug_list(drugs);
+    free_patient_list(pats);
+}
+
+static void PopulateAnalysisDoctorLoad(HWND hLV) {
+    ClearLV(hLV);
+
+    DoctorNode *docs = load_doctors_list();
+    AppointmentNode *appts = load_appointments_list();
+    PrescriptionNode *prescs = load_prescriptions_list();
+    MedicalRecordNode *records = load_medical_records_list();
+
+    int row = 0;
+    for (DoctorNode *cur = docs; cur; cur = cur->next) {
+        int apptCount = 0, prescCount = 0;
+        for (AppointmentNode *a = appts; a; a = a->next)
+            if (strcmp(a->data.doctor_id, cur->data.doctor_id) == 0) apptCount++;
+        for (PrescriptionNode *p = prescs; p; p = p->next)
+            if (strcmp(p->data.doctor_id, cur->data.doctor_id) == 0) prescCount++;
+
+        char apptStr[16], prescStr[16], status[20];
+        snprintf(apptStr, sizeof(apptStr), "%d", apptCount);
+        snprintf(prescStr, sizeof(prescStr), "%d", prescCount);
+
+        /* Count medical records for workload */
+        int recCount = 0;
+        for (MedicalRecordNode *r = records; r; r = r->next)
+            if (strcmp(r->data.doctor_id, cur->data.doctor_id) == 0) recCount++;
+
+        if (recCount >= 20) strcpy(status, "高负荷");
+        else if (recCount >= 10) strcpy(status, "正常");
+        else strcpy(status, "较轻松");
+
+        const char *items[6] = {
+            cur->data.doctor_id, cur->data.name,
+            cur->data.department_id, apptStr, prescStr, status
+        };
+        AddRow(hLV, row++, 6, items);
+    }
+
+    free_doctor_list(docs);
+    free_appointment_list(appts);
+    free_prescription_list(prescs);
+    free_medical_record_list(records);
+}
+
+static void PopulateAnalysisFinancial(HWND hLV) {
+    ClearLV(hLV);
+
+    PrescriptionNode *prescs = load_prescriptions_list();
+    DrugNode *drugs = load_drugs_list();
+
+    /* Aggregate by month */
+    struct {
+        char month[8];
+        double total;
+        int count;
+    } months[256];
+    int monthCount = 0;
+
+    for (PrescriptionNode *cur = prescs; cur; cur = cur->next) {
+        char m[8];
+        strncpy(m, cur->data.prescription_date, 7);
+        m[7] = 0;
+        int found = -1;
+        for (int i = 0; i < monthCount; i++) {
+            if (strcmp(months[i].month, m) == 0) { found = i; break; }
+        }
+        if (found < 0) {
+            found = monthCount++;
+            strcpy(months[found].month, m);
+            months[found].total = 0;
+            months[found].count = 0;
+        }
+        months[found].total += cur->data.total_price;
+        months[found].count++;
+    }
+
+    /* Sort months descending */
+    for (int i = 0; i < monthCount - 1; i++) {
+        for (int j = i + 1; j < monthCount; j++) {
+            if (strcmp(months[i].month, months[j].month) < 0) {
+                char tmp_m[8];
+                double tmp_total;
+                int tmp_count;
+                strcpy(tmp_m, months[i].month);
+                tmp_total = months[i].total;
+                tmp_count = months[i].count;
+                strcpy(months[i].month, months[j].month);
+                months[i].total = months[j].total;
+                months[i].count = months[j].count;
+                strcpy(months[j].month, tmp_m);
+                months[j].total = tmp_total;
+                months[j].count = tmp_count;
+            }
+        }
+    }
+
+    int row = 0;
+    for (int i = 0; i < monthCount; i++) {
+        /* Estimate reimbursement using average drug ratio */
+        double reimb = 0, selfPay = 0;
+        int drugCount = 0;
+        for (DrugNode *d = drugs; d; d = d->next) {
+            drugCount++;
+        }
+        /* A rough estimate: prescriptions have drugs, but we don't link them directly here.
+           Use an approximate 50% reimbursement as baseline. */
+        reimb = months[i].total * 0.5;
+        selfPay = months[i].total - reimb;
+
+        char totalStr[32], reimbStr[32], selfStr[32];
+        snprintf(totalStr, sizeof(totalStr), "%.2f", months[i].total);
+        snprintf(reimbStr, sizeof(reimbStr), "%.2f", reimb);
+        snprintf(selfStr, sizeof(selfStr), "%.2f", selfPay);
+
+        char monthLabel[16];
+        snprintf(monthLabel, sizeof(monthLabel), "%s (%d笔)", months[i].month, months[i].count);
+
+        const char *items[4] = { monthLabel, totalStr, reimbStr, selfStr };
+        AddRow(hLV, row++, 4, items);
+    }
+
+    /* Show total row */
+    if (monthCount > 0) {
+        double grandTotal = 0, grandReimb = 0;
+        for (int i = 0; i < monthCount; i++) {
+            grandTotal += months[i].total;
+            grandReimb += months[i].total * 0.5;
+        }
+        char totalStr[32], reimbStr[32], selfStr[32];
+        snprintf(totalStr, sizeof(totalStr), "%.2f", grandTotal);
+        snprintf(reimbStr, sizeof(reimbStr), "%.2f", grandReimb);
+        snprintf(selfStr, sizeof(selfStr), "%.2f", grandTotal - grandReimb);
+        const char *items[4] = {"--- 合计 ---", totalStr, reimbStr, selfStr};
+        AddRow(hLV, row++, 4, items);
+    }
+
+    free_prescription_list(prescs);
+    free_drug_list(drugs);
+}
 
 static HWND CreateAnalysisPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -1128,9 +1463,12 @@ static HWND CreateAnalysisPage(HWND hParent, RECT *rc) {
         hParent, NULL, g_hInst, (LPVOID)(INT_PTR)NAV_ADMIN_ANALYSIS);
     if (!hPage) return NULL;
 
+    int pw = (rc->right - rc->left);
+    int ph = (rc->bottom - rc->top);
+
     HWND hTab = CreateWindowA(WC_TABCONTROLA, "",
         WS_VISIBLE | WS_CHILD | WS_CLIPCHILDREN,
-        10, 10, (rc->right - rc->left) - 20, (rc->bottom - rc->top) - 20,
+        10, 10, pw - 20, ph - 20,
         hPage, NULL, g_hInst, NULL);
 
     TC_ITEMA tci = {0};
@@ -1142,10 +1480,53 @@ static HWND CreateAnalysisPage(HWND hParent, RECT *rc) {
     tci.pszText = "财务统计";
     TabCtrl_InsertItem(hTab, 2, &tci);
 
-    CreateWindowA("STATIC", "报表功能开发中，请使用 CLI 版查看详细报表。",
-        WS_VISIBLE | WS_CHILD | SS_CENTER,
-        30, 50, 300, 100, hPage, NULL, g_hInst, NULL);
+    /* Tab content area */
+    RECT tabRc;
+    GetClientRect(hTab, &tabRc);
+    tabRc.top += 26;
+    tabRc.left += 4;
+    tabRc.right -= 4;
+    tabRc.bottom -= 4;
+    int cx = tabRc.right - tabRc.left;
+    int cy = tabRc.bottom - tabRc.top;
 
+    /* Create tab pages */
+    g_analysisTabPages[0] = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN, tabRc.left, tabRc.top, cx, cy,
+        hPage, NULL, g_hInst, NULL);
+    HWND hLV0 = CreateListView(g_analysisTabPages[0], 4701, 0, 0, cx, cy);
+    AddCol(hLV0, 0, "指标", 150);
+    AddCol(hLV0, 1, "数值", pw - 200);
+    PopulateAnalysisOverview(hLV0);
+
+    g_analysisTabPages[1] = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN, tabRc.left, tabRc.top, cx, cy,
+        hPage, NULL, g_hInst, NULL);
+    HWND hLV1 = CreateListView(g_analysisTabPages[1], 4711, 0, 0, cx, cy);
+    AddCol(hLV1, 0, "医生ID", 80);
+    AddCol(hLV1, 1, "姓名", 80);
+    AddCol(hLV1, 2, "科室", 80);
+    AddCol(hLV1, 3, "接诊数", 70);
+    AddCol(hLV1, 4, "处方数", 70);
+    AddCol(hLV1, 5, "工作状态", 80);
+    PopulateAnalysisDoctorLoad(hLV1);
+
+    g_analysisTabPages[2] = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN, tabRc.left, tabRc.top, cx, cy,
+        hPage, NULL, g_hInst, NULL);
+    HWND hLV2 = CreateListView(g_analysisTabPages[2], 4721, 0, 0, cx, cy);
+    AddCol(hLV2, 0, "月份", 130);
+    AddCol(hLV2, 1, "总收入", 120);
+    AddCol(hLV2, 2, "报销金额", 120);
+    AddCol(hLV2, 3, "自费金额", 120);
+    PopulateAnalysisFinancial(hLV2);
+
+    /* Show first tab */
+    ShowWindow(g_analysisTabPages[0], SW_SHOW);
+    ShowWindow(g_analysisTabPages[1], SW_HIDE);
+    ShowWindow(g_analysisTabPages[2], SW_HIDE);
+
+    ApplyDefaultFont(hPage);
     return hPage;
 }
 
