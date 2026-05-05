@@ -218,8 +218,8 @@ static float get_registration_fee(const char *title) {
     return 15.0f;  /* 医师/其他 */
 }
 
-/* 统计某医生某日期某时段已预约人数 (不含已取消/已爽约)
-   Count active appointments for doctor+date+timeslot */
+/* 统计某医生某日期某时段排队人数 (不含已就诊/已取消/已爽约)
+   Count waiting appointments for doctor+date+timeslot */
 static int count_slot_appointments(const char *doctor_id, const char *date,
                                    const char *timeSlot) {
     int count = 0;
@@ -237,6 +237,7 @@ static int count_slot_appointments(const char *doctor_id, const char *date,
             if (strcmp(cur->data.doctor_id, doctor_id) == 0 &&
                 strcmp(cur->data.appointment_date, date) == 0 &&
                 strcmp(cur->data.appointment_time, timeSlot) == 0 &&
+                strcmp(cur->data.status, "已就诊") != 0 &&
                 strcmp(cur->data.status, "已取消") != 0 &&
                 strcmp(cur->data.status, "已爽约") != 0) {
                 /* 过去日期的待就诊自动标记为已爽约 */
