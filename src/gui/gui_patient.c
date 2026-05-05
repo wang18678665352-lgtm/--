@@ -277,6 +277,7 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             }
             SendMessage(hDate, CB_SETCURSEL, 0, 0);
         }
+        y += 30;
 
         CreateWindowA("STATIC", "时段:", WS_VISIBLE|WS_CHILD,
             20, y+2, 80, 20, hDlg, NULL, g_hInst, NULL);
@@ -460,7 +461,7 @@ static int ShowRegDialog(HWND hParent) {
 
     HWND hDlg = CreateWindowExA(0, "PatientRegDialog", "预约挂号",
         WS_VISIBLE|WS_POPUPWINDOW|WS_CAPTION|WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 400, 260,
+        CW_USEDEFAULT, CW_USEDEFAULT, 400, 290,
         hParent, NULL, g_hInst, NULL);
     if (!hDlg) return 0;
 
