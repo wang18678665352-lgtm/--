@@ -881,14 +881,50 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 char targetId[32];
                 ListView_GetItemText(hLV, sel, 0, targetId, sizeof(targetId));
                 ScheduleNode *head = load_schedules_list();
+                char schedDocId[20] = {0}, schedDate[12] = {0}, schedSlot[16] = {0};
                 for (ScheduleNode *cur = head; cur; cur = cur->next) {
                     if (strcmp(cur->data.schedule_id, targetId) == 0) {
                         strcpy(cur->data.status, "停诊");
+                        strcpy(schedDocId, cur->data.doctor_id);
+                        strcpy(schedDate, cur->data.work_date);
+                        strcpy(schedSlot, cur->data.time_slot);
                         break;
                     }
                 }
                 save_schedules_list(head);
                 free_schedule_list(head);
+
+                /* 联动取消该排班下所有待就诊预约 / Auto-cancel appointments */
+                if (strlen(schedDocId) > 0) {
+                    AppointmentNode *apps = load_appointments_list();
+                    int canceledCount = 0;
+                    if (apps) {
+                        for (AppointmentNode *a = apps; a; a = a->next) {
+                            if (strcmp(a->data.doctor_id, schedDocId) == 0 &&
+                                strcmp(a->data.appointment_date, schedDate) == 0 &&
+                                strcmp(a->data.appointment_time, schedSlot) == 0 &&
+                                strcmp(a->data.status, "待就诊") == 0) {
+                                strcpy(a->data.status, "已取消");
+                                a->data.paid = 0;  /* 退费 */
+                                canceledCount++;
+                            }
+                        }
+                        if (canceledCount > 0)
+                            save_appointments_list(apps);
+                        free_appointment_list(apps);
+                    }
+                    if (canceledCount > 0) {
+                        char logMsg[128];
+                        snprintf(logMsg, sizeof(logMsg),
+                            "停诊联动取消 %d 个预约", canceledCount);
+                        append_log(g_currentUser.username, "停诊联动", "schedule",
+                                   targetId, logMsg);
+                        char mbMsg[128];
+                        snprintf(mbMsg, sizeof(mbMsg),
+                            "已停诊, 同时取消了 %d 个关联预约并退费。", canceledCount);
+                        MessageBoxA(hWnd, mbMsg, "提示", MB_OK | MB_ICONINFORMATION);
+                    }
+                }
                 PopulateSchedList(hLV);
                 return 0;
             }

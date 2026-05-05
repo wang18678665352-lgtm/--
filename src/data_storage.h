@@ -118,8 +118,10 @@ typedef struct {
     char department_id[MAX_ID];     /* 科室 ID */
     char appointment_date[20];      /* 预约日期 (YYYY-MM-DD, 限未来 7 天) */
     char appointment_time[20];      /* 预约时段 (如 "上午(08:00-12:00)") */
-    char status[20];                /* 状态: 已预约/已完成/已取消 */
+    char status[20];                /* 状态: 待就诊/已就诊/已取消/已爽约 */
     char create_time[30];           /* 创建时间戳 */
+    float fee;                      /* 挂号费 (元) */
+    int paid;                       /* 是否已缴费 (0=未缴, 1=已缴) */
 } Appointment;
 
 /* 现场挂号 — 持久化到 onsite_registrations.txt

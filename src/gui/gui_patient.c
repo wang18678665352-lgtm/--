@@ -207,6 +207,98 @@ static int doctor_has_schedule(const char *docId, const char *date, const char *
     return found;
 }
 
+/* ─── 挂号辅助函数 / Registration Helpers ──────────────────────────── */
+
+#define MAX_PER_SLOT 20  /* 每时段号源上限 / max appointments per slot */
+
+/* 根据医生职称返回挂号费 / Return registration fee by doctor title */
+static float get_registration_fee(const char *title) {
+    if (strstr(title, "主任")) return 50.0f;
+    if (strstr(title, "副主任")) return 30.0f;
+    return 15.0f;  /* 医师/其他 */
+}
+
+/* 统计某医生某日期某时段已预约人数 (不含已取消/已爽约)
+   Count active appointments for doctor+date+timeslot */
+static int count_slot_appointments(const char *doctor_id, const char *date,
+                                   const char *timeSlot) {
+    int count = 0;
+    time_t now = time(NULL);
+    struct tm tmNow;
+    memcpy(&tmNow, localtime(&now), sizeof(tmNow));
+    char todayStr[12];
+    snprintf(todayStr, sizeof(todayStr), "%04d-%02d-%02d",
+             tmNow.tm_year + 1900, tmNow.tm_mon + 1, tmNow.tm_mday);
+
+    AppointmentNode *apps = load_appointments_list();
+    if (apps) {
+        AppointmentNode *cur = apps;
+        while (cur) {
+            if (strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+                strcmp(cur->data.appointment_date, date) == 0 &&
+                strcmp(cur->data.appointment_time, timeSlot) == 0 &&
+                strcmp(cur->data.status, "已取消") != 0 &&
+                strcmp(cur->data.status, "已爽约") != 0) {
+                /* 过去日期的待就诊自动标记为已爽约 */
+                if (strcmp(date, todayStr) < 0 &&
+                    strcmp(cur->data.status, "待就诊") == 0) {
+                    strcpy(cur->data.status, "已爽约");
+                } else {
+                    count++;
+                }
+            }
+            cur = cur->next;
+        }
+        /* 如果有爽约被标记, 保存 / Save if any no-shows were marked */
+        AppointmentNode *c2 = apps;
+        int modified = 0;
+        while (c2) {
+            if (strcmp(c2->data.status, "已爽约") == 0) modified = 1;
+            c2 = c2->next;
+        }
+        if (modified) save_appointments_list(apps);
+        free_appointment_list(apps);
+    }
+    return count;
+}
+
+/* 统计某患者的爽约次数 / Count no-shows for a patient */
+static int count_patient_no_shows(const char *patient_id) {
+    int count = 0;
+    AppointmentNode *apps = load_appointments_list();
+    if (apps) {
+        for (AppointmentNode *cur = apps; cur; cur = cur->next) {
+            if (strcmp(cur->data.patient_id, patient_id) == 0 &&
+                strcmp(cur->data.status, "已爽约") == 0)
+                count++;
+        }
+        free_appointment_list(apps);
+    }
+    return count;
+}
+
+/* 检查同一患者是否已在同时段有预约 / Check duplicate appointment */
+static int has_duplicate_appointment(const char *patient_id,
+                                     const char *doctor_id,
+                                     const char *date,
+                                     const char *timeSlot) {
+    AppointmentNode *apps = load_appointments_list();
+    if (!apps) return 0;
+    int found = 0;
+    for (AppointmentNode *cur = apps; cur; cur = cur->next) {
+        if (strcmp(cur->data.patient_id, patient_id) == 0 &&
+            strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+            strcmp(cur->data.appointment_date, date) == 0 &&
+            strcmp(cur->data.appointment_time, timeSlot) == 0 &&
+            strcmp(cur->data.status, "待就诊") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    free_appointment_list(apps);
+    return found;
+}
+
 /* ─── 挂号对话框 / Registration Dialog ──────────────────────────────── */
 
 /* 挂号对话框: 科室下拉→联动过滤医生→日期下拉(今天~+6天)→时段下拉(7个时段)
@@ -284,13 +376,8 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
         HWND hTime = CreateWindowA("COMBOBOX", "",
             WS_VISIBLE|WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL|CBS_HASSTRINGS,
             110, y, 150, 100, hDlg, (HMENU)IDC_REG_TIME, g_hInst, NULL);
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"08:00-09:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"09:00-10:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"10:00-11:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"11:00-12:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"14:00-15:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"15:00-16:00");
-        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"16:00-17:00");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"上午(08:00-12:00)");
+        SendMessageA(hTime, CB_ADDSTRING, 0, (LPARAM)"下午(14:00-17:00)");
         SendMessage(hTime, CB_SETCURSEL, 0, 0);
         y += 35;
 
@@ -349,17 +436,15 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* 从标签中提取科室名、医生名、时段 */
             char deptName[100] = {0};
             SendMessageA(hDept, CB_GETLBTEXT, (WPARAM)deptSel, (LPARAM)deptName);
             char docLabel[150] = {0};
             SendMessageA(hDoc, CB_GETLBTEXT, (WPARAM)docSel, (LPARAM)docLabel);
-            char timeSlot[16] = {0};
+            char timeSlot[64] = {0};
             HWND hTime = GetDlgItem(hDlg, IDC_REG_TIME);
             int timeSel = (int)SendMessage(hTime, CB_GETCURSEL, 0, 0);
             SendMessageA(hTime, CB_GETLBTEXT, (WPARAM)timeSel, (LPARAM)timeSlot);
 
-            /* 从日期下拉框获取日期 */
             int dateSel = (int)SendMessage(GetDlgItem(hDlg, IDC_REG_DATE), CB_GETCURSEL, 0, 0);
             char dateStr[20] = {0};
             if (dateSel != CB_ERR) {
@@ -369,9 +454,6 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                          tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
             }
 
-            /* ── 排班校验 ── */
-            /* 找医生 ID（先取 deptId 用于排班检查） */
-            /* 根据科室名找科室 ID */
             char deptId[20] = {0};
             DepartmentNode *depts = load_departments_list();
             for (DepartmentNode *d = depts; d; d = d->next) {
@@ -382,7 +464,6 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             }
             free_department_list(depts);
 
-            /* 找医生 ID：从 docLabel 中取名字部分 */
             char docName[100] = {0};
             char *dash = strstr(docLabel, " - ");
             if (dash) {
@@ -395,11 +476,12 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
             }
 
             char docId[20] = {0};
+            char docTitle[50] = {0};
             DoctorNode *docs = load_doctors_list();
             for (DoctorNode *d = docs; d; d = d->next) {
                 if (strcmp(d->data.name, docName) == 0) {
                     strcpy(docId, d->data.doctor_id);
-                    /* 更新医生繁忙度 */
+                    strcpy(docTitle, d->data.title);
                     if (d->data.busy_level < 10) d->data.busy_level++;
                     break;
                 }
@@ -412,28 +494,72 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
+            /* 爽约检查: >=3 次禁止挂号 / No-show check: block if >=3 */
+            const char *pid = GetPatientId();
+            int noShowCount = count_patient_no_shows(pid);
+            if (noShowCount >= 3) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS,
+                    "您有3次以上爽约记录, 暂无法挂号");
+                return 0;
+            }
+
+            /* 重复挂号检查 / Duplicate check */
+            if (has_duplicate_appointment(pid, docId, dateStr, timeSlot)) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS,
+                    "您在该时段已有预约, 请勿重复挂号");
+                return 0;
+            }
+
+            /* 排班校验 / Schedule check */
             if (!doctor_has_schedule(docId, dateStr, timeSlot)) {
                 SetDlgItemTextA(hDlg, IDC_REG_STATUS, "该医生此时段无排班");
                 return 0;
             }
 
+            /* 号源容量检查 / Capacity check */
+            int queued = count_slot_appointments(docId, dateStr, timeSlot);
+            if (queued >= MAX_PER_SLOT) {
+                SetDlgItemTextA(hDlg, IDC_REG_STATUS, "该时段已约满, 请选择其他时段");
+                return 0;
+            }
+
+            /* 挂号费 / Registration fee */
+            float fee = get_registration_fee(docTitle);
+            char confirmMsg[256];
+            snprintf(confirmMsg, sizeof(confirmMsg),
+                "医生: %s (%s)\n日期: %s\n时段: %s\n当前排队: %d 人\n挂号费: %.0f 元\n\n确认挂号并缴费?",
+                docName, docTitle, dateStr, timeSlot, queued + 1, fee);
+            if (MessageBoxA(hDlg, confirmMsg, "确认挂号",
+                           MB_YESNO | MB_ICONQUESTION) != IDYES)
+                return 0;
+
             /* 创建预约 */
             Appointment apt;
             memset(&apt, 0, sizeof(apt));
             generate_id(apt.appointment_id, sizeof(apt.appointment_id), "APT");
-            strcpy(apt.patient_id, GetPatientId());
+            strcpy(apt.patient_id, pid);
             strcpy(apt.doctor_id, docId);
             strcpy(apt.department_id, deptId);
             strcpy(apt.appointment_date, dateStr);
             strcpy(apt.appointment_time, timeSlot);
             strcpy(apt.status, "待就诊");
             get_current_time(apt.create_time, sizeof(apt.create_time));
+            apt.fee = fee;
+            apt.paid = 1;
 
             AppointmentNode *head = load_appointments_list();
             AppointmentNode *node = create_appointment_node(&apt);
             node->next = head;
             save_appointments_list(node);
             free_appointment_list(node);
+
+            append_log(g_currentUser.username, "挂号缴费", "appointment",
+                       apt.appointment_id, "");
+
+            char doneMsg[128];
+            snprintf(doneMsg, sizeof(doneMsg),
+                "挂号成功! 排队第 %d 位, 挂号费 %.0f 元已缴。", queued + 1, fee);
+            MessageBoxA(hDlg, doneMsg, "成功", MB_OK | MB_ICONINFORMATION);
 
             g_regResult = 1;
             DestroyWindow(hDlg);
@@ -532,21 +658,42 @@ static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             }
             char apptId[20] = {0};
             ListView_GetItemText(hLV, sel, 0, apptId, sizeof(apptId));
-            if (MessageBoxA(hWnd, "确定要取消该预约吗？", "确认",
+            AppointmentNode *apps = load_appointments_list();
+            float refundFee = 0.0f;
+            int canRefund = 0;
+            for (AppointmentNode *cur = apps; cur; cur = cur->next) {
+                if (strcmp(cur->data.appointment_id, apptId) == 0) {
+                    if (strcmp(cur->data.status, "待就诊") == 0 &&
+                        cur->data.paid && cur->data.fee > 0) {
+                        refundFee = cur->data.fee;
+                        canRefund = 1;
+                    }
+                    break;
+                }
+            }
+            char cancelMsg[256];
+            if (canRefund)
+                snprintf(cancelMsg, sizeof(cancelMsg),
+                    "确定取消该预约吗？\n将退还挂号费 %.0f 元。", refundFee);
+            else
+                snprintf(cancelMsg, sizeof(cancelMsg), "确定取消该预约吗？");
+            if (MessageBoxA(hWnd, cancelMsg, "确认",
                             MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                AppointmentNode *apps = load_appointments_list();
                 for (AppointmentNode *cur = apps; cur; cur = cur->next) {
                     if (strcmp(cur->data.appointment_id, apptId) == 0) {
                         strcpy(cur->data.status, "已取消");
+                        cur->data.paid = 0;  /* 退费 */
                         break;
                     }
                 }
                 save_appointments_list(apps);
-                free_appointment_list(apps);
-                MessageBoxA(hWnd, "预约已取消", "成功", MB_OK);
-                /* 刷新：重新创建页面 */
+                if (canRefund)
+                    append_log(g_currentUser.username, "退号退费", "appointment",
+                               apptId, "");
+                MessageBoxA(hWnd, "预约已取消, 号源已释放", "成功", MB_OK);
                 PostMessage(GetParent(hWnd), WM_APP + 1, NAV_PATIENT_APPOINTMENT, 0);
             }
+            free_appointment_list(apps);
             return 0;
         }
 

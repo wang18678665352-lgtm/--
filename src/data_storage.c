@@ -1251,6 +1251,10 @@ AppointmentNode* load_appointments_list(void) {
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.appointment_time, tk, sizeof(appointment.appointment_time) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.status, tk, sizeof(appointment.status) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(appointment.create_time, tk, sizeof(appointment.create_time) - 1); }
+        /* fee 和 paid 为后加字段, 旧数据可能没有, 给默认值
+           fee & paid are backward-compat fields, default if missing */
+        { char *tk = next_token(&cursor); appointment.fee = (tk && tk[0]) ? (float)atof(tk) : 0.0f; }
+        { char *tk = next_token(&cursor); appointment.paid = (tk && tk[0]) ? atoi(tk) : 0; }
 
         AppointmentNode *node = create_appointment_node(&appointment);
         if (!node) {
@@ -1278,7 +1282,7 @@ int save_appointments_list(AppointmentNode *head) {
         return ERROR_FILE_IO;
     }
 
-    fprintf(fp, "# appointment_id\tpatient_id\tdoctor_id\tdepartment_id\tappointment_date\tappointment_time\tstatus\tcreate_time\n");
+    fprintf(fp, "# appointment_id\tpatient_id\tdoctor_id\tdepartment_id\tappointment_date\tappointment_time\tstatus\tcreate_time\tfee\tpaid\n");
     AppointmentNode *current = head;
     while (current) {
         fprintf_escaped(fp, current->data.appointment_id); fprintf(fp, "\t");
@@ -1288,7 +1292,8 @@ int save_appointments_list(AppointmentNode *head) {
         fprintf_escaped(fp, current->data.appointment_date); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.appointment_time); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.status); fprintf(fp, "\t");
-        fprintf_escaped(fp, current->data.create_time); fprintf(fp, "\n");
+        fprintf_escaped(fp, current->data.create_time); fprintf(fp, "\t");
+        fprintf(fp, "%.2f\t%d\n", current->data.fee, current->data.paid);
         current = current->next;
     }
 
