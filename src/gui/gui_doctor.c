@@ -476,13 +476,11 @@ static LRESULT CALLBACK ReminderPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         return 0;
     }
     case WM_SIZE: {
-        int h = HIWORD(lParam);
-        HWND hChild = GetWindow(hWnd, GW_CHILD);
-        while (hChild) {
-            SetWindowPos(hChild, NULL, 0, 0,
-                         LOWORD(lParam), h - 40, SWP_NOZORDER | SWP_NOMOVE);
-            hChild = GetWindow(hChild, GW_HWNDNEXT);
-        }
+        int w = LOWORD(lParam), h = HIWORD(lParam);
+        HWND hLV = GetDlgItem(hWnd, 3001);
+        if (hLV) SetWindowPos(hLV, NULL, 5, 5, w - 10, h - 50, SWP_NOZORDER);
+        HWND hBtn = GetDlgItem(hWnd, 3101);
+        if (hBtn) SetWindowPos(hBtn, NULL, w - 120, h - 40, 110, 30, SWP_NOZORDER);
         return 0;
     }
     case WM_COMMAND: {
@@ -1203,11 +1201,8 @@ static LRESULT CALLBACK TemplatePageWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
     }
     case WM_SIZE: {
         int cx = LOWORD(lParam), cy = HIWORD(lParam);
-        HWND hChild = GetWindow(hWnd, GW_CHILD);
-        while (hChild) {
-            SetWindowPos(hChild, NULL, 0, 0, cx, cy - 50, SWP_NOZORDER | SWP_NOMOVE);
-            hChild = GetWindow(hChild, GW_HWNDNEXT);
-        }
+        HWND hLV = GetDlgItem(hWnd, 3007);
+        if (hLV) SetWindowPos(hLV, NULL, 0, 0, cx, cy - 50, SWP_NOZORDER);
         return 0;
     }
     case WM_COMMAND: {
