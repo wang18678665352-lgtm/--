@@ -1152,10 +1152,23 @@ static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     }
     case WM_SIZE: {
         int cx = LOWORD(lParam), cy = HIWORD(lParam);
-        HWND hChild = GetWindow(hWnd, GW_CHILD);
-        while (hChild) {
-            SetWindowPos(hChild, NULL, 0, 0, cx, cy - 40, SWP_NOZORDER | SWP_NOMOVE);
-            hChild = GetWindow(hChild, GW_HWNDNEXT);
+
+        if (viewId == NAV_PATIENT_APPOINTMENT) {
+            HWND hAptLV  = GetDlgItem(hWnd, 2001);
+            HWND hOnsLV  = GetDlgItem(hWnd, 2011);
+            HWND hCancel = GetDlgItem(hWnd, 1002);
+            HWND hBack   = GetDlgItem(hWnd, 1003);
+            int lvY = 30, lvH = cy - 75;
+            if (hAptLV)  SetWindowPos(hAptLV, NULL, 5, lvY, cx - 10, lvH, SWP_NOZORDER);
+            if (hOnsLV)  SetWindowPos(hOnsLV, NULL, 5, lvY, cx - 10, lvH, SWP_NOZORDER);
+            if (hCancel) SetWindowPos(hCancel, NULL, cx - 100, cy - 40, 90, 30, SWP_NOZORDER);
+            if (hBack)   SetWindowPos(hBack, NULL, cx - 100, cy - 40, 90, 30, SWP_NOZORDER);
+        } else {
+            HWND hChild = GetWindow(hWnd, GW_CHILD);
+            while (hChild) {
+                SetWindowPos(hChild, NULL, 0, 0, cx, cy - 40, SWP_NOZORDER | SWP_NOMOVE);
+                hChild = GetWindow(hChild, GW_HWNDNEXT);
+            }
         }
         return 0;
     }
@@ -1174,6 +1187,66 @@ static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         case 1011: { /* 现场挂号（从挂号页面发起） */
             if (ShowOnsiteRegDialog(hWnd)) {
                 MessageBoxA(hWnd, "现场挂号成功！请前往「预约查询」查看排队状态。", "成功", MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        }
+
+        case 2020: { /* 预约挂号 tab */
+            HWND hAptLV = GetDlgItem(hWnd, 2001);
+            HWND hOnsLV = GetDlgItem(hWnd, 2011);
+            HWND hCancel = GetDlgItem(hWnd, 1002);
+            HWND hBack   = GetDlgItem(hWnd, 1003);
+            if (hAptLV)  ShowWindow(hAptLV, SW_SHOW);
+            if (hOnsLV)  ShowWindow(hOnsLV, SW_HIDE);
+            if (hCancel) ShowWindow(hCancel, SW_SHOW);
+            if (hBack)   ShowWindow(hBack, SW_HIDE);
+            return 0;
+        }
+
+        case 2021: { /* 现场挂号 tab */
+            HWND hAptLV = GetDlgItem(hWnd, 2001);
+            HWND hOnsLV = GetDlgItem(hWnd, 2011);
+            HWND hCancel = GetDlgItem(hWnd, 1002);
+            HWND hBack   = GetDlgItem(hWnd, 1003);
+            if (hAptLV)  ShowWindow(hAptLV, SW_HIDE);
+            if (hOnsLV)  ShowWindow(hOnsLV, SW_SHOW);
+            if (hCancel) ShowWindow(hCancel, SW_HIDE);
+            if (hBack)   ShowWindow(hBack, SW_SHOW);
+            return 0;
+        }
+
+        case 1003: { /* 退号（现场挂号记录页） */
+            HWND hLV = GetDlgItem(hWnd, 2011);
+            if (!hLV) return 0;
+            int sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
+            if (sel < 0) {
+                MessageBoxA(hWnd, "请先选择一个现场挂号", "提示", MB_OK);
+                return 0;
+            }
+            char onsId[MAX_ID] = "";
+            char status[20] = "";
+            ListView_GetItemText(hLV, sel, 0, onsId, sizeof(onsId));
+            ListView_GetItemText(hLV, sel, 4, status, sizeof(status));
+            if (strcmp(status, "排队中") != 0) {
+                MessageBoxA(hWnd, "当前状态无法退号", "提示", MB_OK);
+                return 0;
+            }
+            if (MessageBoxA(hWnd, "确定退号？退号后需重新排队", "确认",
+                            MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+                OnsiteRegistrationNode *on = onQ.front;
+                while (on) {
+                    if (strcmp(on->data.onsite_id, onsId) == 0) {
+                        strcpy(on->data.status, "已退号");
+                        break;
+                    }
+                    on = on->next;
+                }
+                save_onsite_registration_queue(&onQ);
+                free_onsite_registration_queue(&onQ);
+                append_log(g_currentUser.username, "退号", "onsite", onsId, "");
+                MessageBoxA(hWnd, "已退号", "成功", MB_OK);
+                PostMessage(GetParent(hWnd), WM_APP + 1, NAV_PATIENT_APPOINTMENT, 0);
             }
             return 0;
         }
@@ -1390,38 +1463,100 @@ static HWND CreateAppointmentPage(HWND hParent, RECT *rc) {
     int w = (rc->right - rc->left) - 10;
     int h = (rc->bottom - rc->top) - 10;
 
-    HWND hLV = CreateListView(hPage, 2001, 5, 5, w, h - 50);
-    AddCol(hLV, 0, "预约ID", 100);
-    AddCol(hLV, 1, "医生", 80);
-    AddCol(hLV, 2, "日期", 100);
-    AddCol(hLV, 3, "时段", 60);
-    AddCol(hLV, 4, "状态", 60);
+    /* Radio buttons for tab switching */
+    CreateWindowA("BUTTON", "预约挂号",
+        WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON | WS_GROUP,
+        10, 5, 80, 22, hPage, (HMENU)2020, g_hInst, NULL);
+    CreateWindowA("BUTTON", "现场挂号",
+        WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
+        100, 5, 80, 22, hPage, (HMENU)2021, g_hInst, NULL);
+    CheckRadioButton(hPage, 2020, 2021, 2020);
 
+    int lvY = 30, lvH = h - 75;
     const char *pid = GetPatientId();
+
+    /* ── 预约挂号 ListView / Appointment ListView ── */
+    HWND hAptLV = CreateListView(hPage, 2001, 5, lvY, w, lvH);
+    AddCol(hAptLV, 0, "预约ID", 100);
+    AddCol(hAptLV, 1, "医生", 80);
+    AddCol(hAptLV, 2, "日期", 100);
+    AddCol(hAptLV, 3, "时段", 60);
+    AddCol(hAptLV, 4, "状态", 60);
+
+    int aptRow = 0;
     AppointmentNode *apps = load_appointments_list();
-    int row = 0;
     if (apps && strlen(pid) > 0) {
         AppointmentNode *cur = apps;
         while (cur) {
             if (strcmp(cur->data.patient_id, pid) == 0) {
                 const char *items[5] = {
-                    cur->data.appointment_id,
-                    cur->data.doctor_id,
-                    cur->data.appointment_date,
-                    cur->data.appointment_time,
+                    cur->data.appointment_id, cur->data.doctor_id,
+                    cur->data.appointment_date, cur->data.appointment_time,
                     cur->data.status
                 };
-                AddRow(hLV, row++, 5, items);
+                AddRow(hAptLV, aptRow++, 5, items);
             }
             cur = cur->next;
         }
     }
     free_appointment_list(apps);
 
+    /* ── 现场挂号 ListView / Onsite Registration ListView ── */
+    HWND hOnsLV = CreateListView(hPage, 2011, 5, lvY, w, lvH);
+    AddCol(hOnsLV, 0, "现场单号", 130);
+    AddCol(hOnsLV, 1, "医生", 80);
+    AddCol(hOnsLV, 2, "科室", 80);
+    AddCol(hOnsLV, 3, "排队号", 60);
+    AddCol(hOnsLV, 4, "状态", 60);
+    AddCol(hOnsLV, 5, "排队位置", 60);
+
+    int onsRow = 0;
+    if (strlen(pid) > 0) {
+        OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+        OnsiteRegistrationNode *on = onQ.front;
+        while (on) {
+            if (strcmp(on->data.patient_id, pid) == 0) {
+                /* 计算排队位置: 同医生同科室中排队号更小的"排队中"数量
+                   Calc queue position: count "排队中" entries for same
+                   doctor+dept with smaller queue_number */
+                int ahead = 0;
+                if (strcmp(on->data.status, "排队中") == 0) {
+                    OnsiteRegistrationNode *o2 = onQ.front;
+                    while (o2) {
+                        if (strcmp(o2->data.doctor_id, on->data.doctor_id) == 0 &&
+                            strcmp(o2->data.department_id, on->data.department_id) == 0 &&
+                            strcmp(o2->data.status, "排队中") == 0 &&
+                            o2->data.queue_number < on->data.queue_number) {
+                            ahead++;
+                        }
+                        o2 = o2->next;
+                    }
+                }
+                char qn[12], aheadStr[20];
+                snprintf(qn, sizeof(qn), "%d", on->data.queue_number);
+                snprintf(aheadStr, sizeof(aheadStr), "%d人前", ahead);
+                if (ahead == 0 && strcmp(on->data.status, "排队中") != 0)
+                    aheadStr[0] = 0;
+                const char *items[6] = {
+                    on->data.onsite_id, on->data.doctor_id,
+                    on->data.department_id, qn, on->data.status,
+                    aheadStr
+                };
+                AddRow(hOnsLV, onsRow++, 6, items);
+            }
+            on = on->next;
+        }
+        free_onsite_registration_queue(&onQ);
+    }
+    ShowWindow(hOnsLV, SW_HIDE);
+
+    /* Action buttons */
     CreateWindowA("BUTTON", "取消预约",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        w - 100, h - 40, 90, 30,
-        hPage, (HMENU)1002, g_hInst, NULL);
+        w - 100, h - 40, 90, 30, hPage, (HMENU)1002, g_hInst, NULL);
+    CreateWindowA("BUTTON", "退号",
+        WS_CHILD | BS_PUSHBUTTON,  /* hidden initially */
+        w - 100, h - 40, 90, 30, hPage, (HMENU)1003, g_hInst, NULL);
 
     return hPage;
 }
