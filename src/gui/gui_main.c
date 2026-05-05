@@ -1,3 +1,22 @@
+/*
+ * gui_main.c — Win32 GUI 主窗口实现 / Win32 GUI main window implementation
+ *
+ * 实现 GUI 版本的主窗口，提供与 console 版本相同的功能但通过 Win32 原生控件:
+ *   - 左侧导航树 (TreeView) — 按角色显示不同的功能节点
+ *   - 右侧内容区 — 根据导航选择动态切换页面 (患者/医生/管理员视图)
+ *   - 顶部注销按钮 + 底部状态栏 (StatusBar)
+ *   - 布局自适应窗口大小调整 (OnSize)
+ *
+ * 启动流程: 初始化数据 → 创建主窗口 → 显示登录对话框 → 填充导航树 →
+ * 切换到首个页面 → 进入消息循环。
+ *
+ * Each role page is created by a factory function (CreatePatientPage /
+ * CreateDoctorPage / CreateAdminPage) based on the selected nav item.
+ *
+ * Implements Win32 GUI main window with TreeView navigation, dynamic page
+ * switching, status bar, and responsive layout.
+ */
+
 #include "gui_main.h"
 #include "gui_login.h"
 #include "gui_patient.h"
@@ -8,50 +27,54 @@
 #include "../public.h"
 #include "../sha256.h"
 
-/* 全局变量 */
-HINSTANCE g_hInst = NULL;
-User g_currentUser = {0};
-static HWND g_hMainWnd = NULL;
-static HWND g_hNavTree = NULL;
-static HWND g_hContentView = NULL;
-static HWND g_hStatusBar = NULL;
-static HWND g_hLogoutBtn = NULL;
-static int g_currentView = 0;
+/* ==================  全局变量 / Global Variables ================== */
 
-/* 内部函数声明 */
+HINSTANCE g_hInst = NULL;              /* 应用实例句柄 / application instance */
+User g_currentUser = {0};              /* 当前登录用户 / current logged-in user */
+static HWND g_hMainWnd = NULL;         /* 主窗口句柄 / main window handle */
+static HWND g_hNavTree = NULL;         /* 左侧导航树 / left nav tree */
+static HWND g_hContentView = NULL;     /* 右侧内容区 / right content area */
+static HWND g_hStatusBar = NULL;       /* 底部状态栏 / bottom status bar */
+static HWND g_hLogoutBtn = NULL;       /* 注销按钮 / logout button */
+static int g_currentView = 0;          /* 当前视图 ID / current view ID */
+
+/* 前向声明 / Forward declarations */
 static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow);
 static HWND CreateNavTree(HWND hParent);
 static void PopulateNavTree(void);
 static void OnNavSelChange(HWND hWnd, LPARAM lParam);
 static void OnSize(HWND hWnd, UINT state, int cx, int cy);
 
-/* ─── WinMain 入口 ─────────────────────────────────────────────────── */
+/* ==================  WinMain 入口 / WinMain Entry ================== */
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow) {
     MSG msg;
 
-    /* 抑制未使用参数警告 */
     (void)hPrevInstance;
     (void)lpCmdLine;
 
-    /* 初始化通用控件 */
+    /* 初始化通用控件库 (TreeView, ListView, Tab, Progress 等)
+       Initialize Common Controls library for TreeView, ListView, etc. */
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_WIN95_CLASSES | ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES |
                 ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS;
     InitCommonControlsEx(&icc);
 
-    /* 初始化数据存储 */
+    /* 初始化数据存储与默认用户 (同 console main.c 逻辑)
+       Init data storage & default users (same logic as console main.c) */
     init_console_encoding();
     if (init_data_storage() != SUCCESS) {
         MessageBoxA(NULL, "数据存储初始化失败!", "错误", MB_ICONERROR);
         return 1;
     }
 
-    /* 初始化默认用户（同 main.c 逻辑） */
+    /* 创建默认用户或迁移密码 / Create defaults or migrate passwords */
     UserNode *head = load_users_list();
     if (!head) {
+        /* 首次运行: admin/doctor1/patient1，密码=用户名+123 的 SHA-256 哈希
+           First run: create default users with SHA-256 hashed passwords */
         User default_users[3];
         const char *usernames[3] = { "admin", "doctor1", "patient1" };
         const char *plain_pwds[3] = { "admin123", "doctor123", "patient123" };
@@ -89,27 +112,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         }
         free_user_list(head);
     }
-    migrate_doctor_ids();
-    ensure_default_templates();
+    migrate_doctor_ids();       /* 迁移旧格式医生 ID */
+    ensure_default_templates(); /* 初始化 18 个默认模板 */
 
     g_hInst = hInstance;
 
-    /* 创建主窗口 */
+    /* 创建主窗口 / Create main window */
     if (!InitMainWindow(hInstance, nCmdShow))
         return 1;
 
-    /* 显示登录对话框 */
+    /* 显示登录对话框 (模态循环) / Show login dialog (modal loop) */
     User loggedUser;
     if (ShowLoginDialog(hInstance, g_hMainWnd, &loggedUser) != SUCCESS) {
         DestroyWindow(g_hMainWnd);
-        return 0;
+        return 0;  /* 用户取消登录 → 退出 / user cancelled → exit */
     }
     g_currentUser = loggedUser;
 
-    /* 填入导航树 */
+    /* 按角色填充导航树 / Populate nav tree for the logged-in role */
     PopulateNavTree();
 
-    /* 切换到第一个页面 */
+    /* 根据角色切换到首个页面 / Switch to first page based on role */
     int firstView = 0;
     if (strcmp(loggedUser.role, ROLE_PATIENT) == 0)
         firstView = NAV_PATIENT_REGISTER;
@@ -119,12 +142,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         firstView = NAV_ADMIN_DEPT;
     SwitchView(g_hMainWnd, firstView);
 
+    /* 更新状态栏 / Update status bar */
     char status[256];
     snprintf(status, sizeof(status), "  用户: %s  |  角色: %s",
              loggedUser.username, loggedUser.role);
     SetStatusText(g_hMainWnd, status);
 
-    /* 消息循环 */
+    /* Win32 标准消息循环 / Standard Win32 message loop */
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
@@ -132,8 +156,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     return (int)msg.wParam;
 }
 
-/* ─── 初始化主窗口 ─────────────────────────────────────────────────── */
+/* ==================  初始化主窗口 / Initialize Main Window ================== */
 
+/* 注册窗口类 → 创建主窗口 → 显示
+   Register window class → create → show */
 static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
     const char CLASS_NAME[] = "EMSMainWindow";
 
@@ -142,7 +168,7 @@ static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
     wc.hInstance     = hInst;
     wc.hIcon         = LoadIconA(NULL, IDI_APPLICATION);
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);  /* 系统默认背景色 */
     wc.lpszClassName = CLASS_NAME;
 
     if (!RegisterClassA(&wc))
@@ -150,7 +176,7 @@ static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
 
     HWND hWnd = CreateWindowExA(
         0, CLASS_NAME, "电子医疗管理系统",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,    /* 可调大小的窗口 / resizable window */
         CW_USEDEFAULT, CW_USEDEFAULT,
         WINDOW_WIDTH, WINDOW_HEIGHT,
         NULL, NULL, hInst, NULL
@@ -165,8 +191,9 @@ static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
     return TRUE;
 }
 
-/* ─── 创建导航树 ───────────────────────────────────────────────────── */
+/* ==================  导航树 / Navigation Tree ================== */
 
+/* 创建 TreeView 控件 (左侧导航栏) / Create TreeView control (left nav) */
 static HWND CreateNavTree(HWND hParent) {
     HWND hTree = CreateWindowA(
         WC_TREEVIEWA, "", WS_VISIBLE | WS_CHILD | TVS_HASLINES |
@@ -177,19 +204,21 @@ static HWND CreateNavTree(HWND hParent) {
     return hTree;
 }
 
+/* 根据当前用户角色填充导航树节点 / Populate nav tree based on current role */
 static void PopulateNavTree(void) {
     if (!g_hNavTree) return;
 
-    /* 清空 */
-    TreeView_DeleteAllItems(g_hNavTree);
+    TreeView_DeleteAllItems(g_hNavTree);  /* 清空旧的节点 / clear old items */
 
     HTREEITEM hRoot = NULL;
     TV_INSERTSTRUCTA tvis = {0};
     tvis.hInsertAfter = TVI_LAST;
-    tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM;  /* 各节点通过 lParam 传递导航 ID */
 
     const char *role = g_currentUser.role;
 
+    /* 患者导航: 挂号/预约查询/诊断/处方/住院/进度/资料 (7项)
+       Patient nav: register/appointment/diagnosis/prescription/ward/progress/profile */
     if (strcmp(role, ROLE_PATIENT) == 0) {
         tvis.hParent = NULL;
         tvis.item.pszText = (LPSTR)"患者系统";
@@ -208,11 +237,12 @@ static void PopulateNavTree(void) {
         for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
             tvis.hParent = hRoot;
             tvis.item.pszText = (LPSTR)items[i].name;
-            tvis.item.lParam = items[i].id;
+            tvis.item.lParam = items[i].id;     /* 导航 ID 通过 lParam 传递 */
             TreeView_InsertItem(g_hNavTree, &tvis);
         }
-        TreeView_Expand(g_hNavTree, hRoot, TVE_EXPAND);
+        TreeView_Expand(g_hNavTree, hRoot, TVE_EXPAND);  /* 默认展开 / expand by default */
 
+    /* 医生导航: 待接诊/接诊/病房呼叫/紧急标记/进度更新/模板/开药 (7项) */
     } else if (strcmp(role, ROLE_DOCTOR) == 0) {
         tvis.hParent = NULL;
         tvis.item.pszText = (LPSTR)"医生系统";
@@ -236,6 +266,7 @@ static void PopulateNavTree(void) {
         }
         TreeView_Expand(g_hNavTree, hRoot, TVE_EXPAND);
 
+    /* 管理员导航: 科室/医生/患者/药品/病房/排班/日志/数据/报表/密码 (10项) */
     } else if (strcmp(role, ROLE_ADMIN) == 0) {
         tvis.hParent = NULL;
         tvis.item.pszText = (LPSTR)"管理员系统";
@@ -264,8 +295,10 @@ static void PopulateNavTree(void) {
     }
 }
 
-/* ─── 视图切换 ─────────────────────────────────────────────────────── */
+/* ==================  视图切换 / View Switching ================== */
 
+/* 切换右侧内容区: 销毁旧视图 → 根据 viewId 创建新的角色页面
+   Switch content view: destroy old → create new page based on viewId */
 void SwitchView(HWND hWnd, int viewId) {
     if (g_hContentView) {
         DestroyWindow(g_hContentView);
@@ -273,7 +306,8 @@ void SwitchView(HWND hWnd, int viewId) {
     }
     g_currentView = viewId;
 
-    /* 获取内容区域矩形 */
+    /* 计算内容区矩形 (排除导航栏、状态栏、边距)
+       Calculate content area rect (exclude nav, status bar, margins) */
     RECT rc;
     GetClientRect(hWnd, &rc);
     rc.left += NAV_WIDTH + 4;
@@ -283,7 +317,10 @@ void SwitchView(HWND hWnd, int viewId) {
 
     HWND hParent = hWnd;
 
+    /* 按导航 ID 范围路由到对应的页面工厂函数
+       Route to page factory based on nav ID range */
     switch (viewId) {
+    /* 患者页面 (2001-2007) / Patient pages */
     case NAV_PATIENT_REGISTER:
     case NAV_PATIENT_APPOINTMENT:
     case NAV_PATIENT_DIAGNOSIS:
@@ -293,6 +330,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_PATIENT_PROFILE:
         g_hContentView = CreatePatientPage(hParent, viewId, &rc);
         break;
+    /* 医生页面 (3001-3007) / Doctor pages */
     case NAV_DOCTOR_REMINDER:
     case NAV_DOCTOR_CONSULTATION:
     case NAV_DOCTOR_WARD_CALL:
@@ -302,6 +340,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_DOCTOR_PRESCRIBE:
         g_hContentView = CreateDoctorPage(hParent, viewId, &rc);
         break;
+    /* 管理员页面 (4001-4010) / Admin pages */
     case NAV_ADMIN_DEPT:
     case NAV_ADMIN_DOCTOR:
     case NAV_ADMIN_PATIENT:
@@ -319,11 +358,13 @@ void SwitchView(HWND hWnd, int viewId) {
     }
 }
 
+/* 获取内容区句柄 / Get content view handle (for external use) */
 HWND GetContentView(HWND hWnd) {
     (void)hWnd;
     return g_hContentView;
 }
 
+/* 设置状态栏文本 / Set status bar text */
 void SetStatusText(HWND hWnd, const char *text) {
     (void)hWnd;
     if (g_hStatusBar) {
@@ -331,8 +372,10 @@ void SetStatusText(HWND hWnd, const char *text) {
     }
 }
 
-/* ─── 导航选择变化 ─────────────────────────────────────────────────── */
+/* ==================  导航选择变化 / Navigation Selection Change ================== */
 
+/* TVN_SELCHANGEDA 消息处理: 从 lParam 提取新选中节点的 viewId → 切换视图
+   Handle tree selection: extract viewId from lParam → switch view */
 static void OnNavSelChange(HWND hWnd, LPARAM lParam) {
     NM_TREEVIEW *pnmtv = (NM_TREEVIEW *)lParam;
     HTREEITEM hItem = pnmtv->itemNew.hItem;
@@ -343,28 +386,34 @@ static void OnNavSelChange(HWND hWnd, LPARAM lParam) {
     item.mask = TVIF_PARAM;
     TreeView_GetItem(g_hNavTree, &item);
 
-    int viewId = (int)item.lParam;
+    int viewId = (int)item.lParam;    /* 提取节点中保存的导航 ID */
     if (viewId > 0) {
-        SwitchView(hWnd, viewId);
+        SwitchView(hWnd, viewId);     /* 根节点 viewId=0 → 忽略 */
     }
 }
 
-/* ─── 窗口大小调整 ─────────────────────────────────────────────────── */
+/* ==================  窗口大小调整 / Window Resize ================== */
 
+/* WM_SIZE 处理: 重新布局各子控件 (导航栏/注销按钮/状态栏/内容区)
+   Handle resize: relayout nav tree, logout button, status bar, content area */
 static void OnSize(HWND hWnd, UINT state, int cx, int cy) {
     (void)state;
     (void)hWnd;
+    /* 导航树: 顶部→状态栏上方 / Nav tree: top → above status bar */
     if (g_hNavTree) {
         SetWindowPos(g_hNavTree, NULL, 0, 0, NAV_WIDTH, cy - STATUS_HEIGHT - 30,
                      SWP_NOZORDER);
     }
+    /* 注销按钮: 导航树下方 / Logout button: below nav tree */
     if (g_hLogoutBtn) {
         SetWindowPos(g_hLogoutBtn, NULL, 0, cy - STATUS_HEIGHT - 30,
                      NAV_WIDTH, 30, SWP_NOZORDER);
     }
+    /* 状态栏自动调整 / Status bar auto-sizes */
     if (g_hStatusBar) {
         SendMessageA(g_hStatusBar, WM_SIZE, 0, 0);
     }
+    /* 内容区: 填充剩余空间 / Content area: fill remaining space */
     if (g_hContentView) {
         RECT rc = { NAV_WIDTH + 4, 4, cx - 4, cy - STATUS_HEIGHT - 4 };
         SetWindowPos(g_hContentView, NULL, rc.left, rc.top,
@@ -372,29 +421,27 @@ static void OnSize(HWND hWnd, UINT state, int cx, int cy) {
     }
 }
 
-/* ─── 主窗口过程 ───────────────────────────────────────────────────── */
+/* ==================  主窗口过程 / Main Window Procedure ================== */
 
 LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE:
-        /* 创建导航树 */
+        /* 创建子控件: 导航树 + 注销按钮 + 状态栏
+           Create child controls: nav tree + logout button + status bar */
         g_hNavTree = CreateNavTree(hWnd);
 
-        /* 创建退出登录按钮 */
         g_hLogoutBtn = CreateWindowA(
             "BUTTON", "退出登录",
             WS_VISIBLE | WS_CHILD | BS_FLAT,
             0, 0, NAV_WIDTH, 30,
-            hWnd, (HMENU)100, g_hInst, NULL
+            hWnd, (HMENU)100, g_hInst, NULL       /* ID=100: 注销按钮 */
         );
 
-        /* 创建状态栏 */
         g_hStatusBar = CreateWindowA(
             STATUSCLASSNAMEA, "", WS_VISIBLE | WS_CHILD | SBARS_SIZEGRIP,
             0, 0, 0, 0, hWnd, (HMENU)2, g_hInst, NULL
         );
 
-        /* 设置状态栏文本 */
         SetStatusText(hWnd, "  就绪");
         return 0;
 
@@ -403,6 +450,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_NOTIFY:
+        /* 导航树选中项变化 → 切换视图 / Tree selection change → switch view */
         if (((NMHDR *)lParam)->idFrom == 1 &&
             ((NMHDR *)lParam)->code == TVN_SELCHANGEDA) {
             OnNavSelChange(hWnd, lParam);
@@ -410,7 +458,9 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == 100) { /* 退出登录 */
+        if (LOWORD(wParam) == 100) {
+            /* 注销按钮: 清除当前用户 → 重新登录 → 重建导航树 → 切换首页
+               Logout: clear user → re-login → rebuild nav → switch to first page */
             memset(&g_currentUser, 0, sizeof(User));
             User newUser;
             if (ShowLoginDialog(g_hInst, hWnd, &newUser) == SUCCESS) {
@@ -429,10 +479,12 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                          newUser.username, newUser.role);
                 SetStatusText(hWnd, status);
             } else {
+                /* 登录取消 → 关闭主窗口 / Login cancelled → close */
                 DestroyWindow(hWnd);
                 PostQuitMessage(0);
             }
-        } else if (LOWORD(wParam) == 200) { /* 关于 */
+        } else if (LOWORD(wParam) == 200) {
+            /* 关于对话框 / About dialog */
             MessageBoxA(hWnd,
                 "电子医疗管理系统 v1.0\n"
                 "基于 Win32 API 的原生桌面应用\n\n"
@@ -442,7 +494,10 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_APP_REFRESH:
-        /* 仅在未切换页面时才刷新（防止用户快速导航导致的错误跳转） */
+        /* 自定义刷新消息: 子页面 CRUD 后通知刷新列表
+           Custom refresh: posted by child pages after CRUD to refresh list.
+           仅当 viewId 与当前一致时才刷新 (防止快速切换导致的错误)
+           Only refresh if viewId matches current (prevents race condition) */
         if ((int)wParam == g_currentView)
             SwitchView(hWnd, (int)wParam);
         return 0;
