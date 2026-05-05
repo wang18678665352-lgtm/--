@@ -110,6 +110,42 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 ensure_doctor_profile(cur->data.username);
             cur = cur->next;
         }
+        /* 确保默认账号始终存在 / Ensure default accounts always exist */
+        {
+            const char *defUsers[3] = { "admin", "doctor1", "patient1" };
+            const char *defPwds[3]  = { "admin123", "doctor123", "patient123" };
+            const char *defRoles[3] = { ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT };
+            for (int i = 0; i < 3; i++) {
+                int exists = 0;
+                for (UserNode *u = head; u; u = u->next) {
+                    if (strcmp(u->data.username, defUsers[i]) == 0 &&
+                        strcmp(u->data.role, defRoles[i]) == 0) {
+                        exists = 1; break;
+                    }
+                }
+                if (!exists) {
+                    User defU;
+                    memset(&defU, 0, sizeof(defU));
+                    strcpy(defU.username, defUsers[i]);
+                    strcpy(defU.role, defRoles[i]);
+                    uint8_t h[SHA256_DIGEST_SIZE];
+                    char hx[SHA256_HEX_SIZE];
+                    sha256_hash((const uint8_t*)defPwds[i], strlen(defPwds[i]), h);
+                    sha256_hex(h, hx);
+                    strcpy(defU.password, hx);
+                    UserNode *node = create_user_node(&defU);
+                    if (node) {
+                        node->next = head;
+                        head = node;  /* 更新 head 以便后续添加其他默认用户 */
+                        save_users_list(head);
+                    }
+                    if (strcmp(defRoles[i], ROLE_DOCTOR) == 0)
+                        ensure_doctor_profile(defUsers[i]);
+                    else if (strcmp(defRoles[i], ROLE_PATIENT) == 0)
+                        ensure_patient_profile(defUsers[i]);
+                }
+            }
+        }
         free_user_list(head);
     }
     migrate_doctor_ids();       /* 迁移旧格式医生 ID */
