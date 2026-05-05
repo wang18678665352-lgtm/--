@@ -10,6 +10,7 @@ Generates all data files with consistent cross-references.
 import random
 import hashlib
 import os
+from collections import defaultdict
 from datetime import datetime, timedelta, date
 
 random.seed(20260505)
@@ -42,8 +43,24 @@ def random_datetime_str(d, hour_range=(7, 20)):
     s = random.randint(0, 59)
     return f"{date_str(d)} {h:02d}:{m:02d}:{s:02d}"
 
-def gen_id(prefix, seq):
-    return f"{prefix}{seq:04d}"
+# Shared ID generation counters (matches C's static counter in generate_id)
+_id_buckets = defaultdict(int)
+
+def generate_timestamp_id(prefix, dt):
+    """Simulate C's generate_id(): PREFIX + YYYYMMDDHHmmss + 3-digit-seq."""
+    ts = dt.strftime("%Y%m%d%H%M%S")
+    key = (prefix, ts)
+    seq = _id_buckets[key]
+    _id_buckets[key] += 1
+    return f"{prefix}{ts}{seq % 1000:03d}"
+
+def generate_doctor_id(dept_index, dept_seq_counters):
+    """Simulate C's generate_doctor_id(): <letter><4-digit-seq>.
+    Letter = chr('A' + dept_index), capped at 'Z'."""
+    letter = chr(ord('A') + min(dept_index, 25))
+    seq = dept_seq_counters.get(letter, 1)
+    dept_seq_counters[letter] = seq + 1
+    return f"{letter}{seq:04d}"
 
 # ============================================================
 # Chinese name generator
@@ -135,8 +152,10 @@ DEPARTMENT_NAMES = [
 ]
 
 departments = []
+dept_base_dt = datetime(2023, 11, 1, 9, 0, 0)
 for i, name in enumerate(DEPARTMENT_NAMES):
-    dept_id = f"DEP{i+1:03d}"
+    dept_dt = dept_base_dt + timedelta(seconds=i * 3600)
+    dept_id = generate_timestamp_id("DEP", dept_dt)
     leader_name = random_name()
     phone = f"0755-{random.randint(1000000, 9999999)}"
     departments.append((dept_id, name, leader_name, phone))
@@ -148,20 +167,21 @@ for i, name in enumerate(DEPARTMENT_NAMES):
 doctors = []
 doctor_users = []
 doctors_by_dept = {}
-doctor_id_counter = 0
+dept_seq_counters = {}
+is_first_doctor = True
 
-for dept_id, dept_name, _, _ in departments:
+for dept_index, (dept_id, dept_name, _, _) in enumerate(departments):
     n = random.randint(2, 5)
     if dept_name in ["急诊科", "内科", "外科", "妇产科", "儿科"]:
         n = random.randint(4, 6)
     dept_doctors = []
     for _ in range(n):
-        doctor_id_counter += 1
-        doc_id = f"D{doctor_id_counter:04d}"
-        if doctor_id_counter == 1:
+        doc_id = generate_doctor_id(dept_index, dept_seq_counters)
+        if is_first_doctor:
             username = "doctor1"   # linked to test account
+            is_first_doctor = False
         else:
-            username = f"doctor{doctor_id_counter:04d}"
+            username = f"doctor_{doc_id.lower()}"
         name = random_name()
         title = random.choice(DOCTOR_TITLES)
         busy = random.randint(0, 5)
@@ -179,15 +199,17 @@ NUM_DOCTORS = len(doctors)
 
 patients = []
 patient_users = []
-patient_id_counter = 0
+patient_base_dt = datetime(2024, 6, 1, 8, 0, 0)
+is_first_patient = True
 
-for _ in range(500):
-    patient_id_counter += 1
-    pid = f"P{patient_id_counter:04d}"
-    if patient_id_counter == 1:
+for i in range(500):
+    patient_dt = patient_base_dt + timedelta(seconds=i * 86400 // 3)
+    pid = generate_timestamp_id("P", patient_dt)
+    if is_first_patient:
         username = "patient1"  # linked to test account
+        is_first_patient = False
     else:
-        username = f"patient{patient_id_counter:04d}"
+        username = f"patient_{pid.lower()}"
     gender = random.choice(["男", "女"])
     name = random_name(gender)
     age = random.randint(1, 90)
@@ -235,70 +257,75 @@ for uname, phash, role in admin_users:
 # 5. Drugs (generate realistic catalog)
 # ============================================================
 
-DRUG_LIST = [
-    ("DR001", "阿莫西林胶囊", 18.50, "西药", 300, 20, 0, 0.70, "抗生素"),
-    ("DR002", "布洛芬缓释片", 26.00, "西药", 200, 15, 0, 0.60, "解热镇痛"),
-    ("DR003", "阿司匹林肠溶片", 8.50, "西药", 400, 30, 0, 0.80, "抗血小板"),
-    ("DR004", "头孢克洛胶囊", 32.00, "西药", 150, 10, 1, 0.70, "抗生素"),
-    ("DR005", "奥美拉唑肠溶片", 45.00, "西药", 180, 12, 0, 0.65, "消化系统"),
-    ("DR006", "氨氯地平片", 22.00, "西药", 250, 20, 0, 0.75, "心血管"),
-    ("DR007", "二甲双胍缓释片", 35.00, "西药", 300, 25, 0, 0.80, "内分泌"),
-    ("DR008", "氯雷他定片", 12.00, "西药", 350, 30, 0, 0.50, "抗过敏"),
-    ("DR009", "蒙脱石散", 16.00, "西药", 200, 15, 0, 0.60, "消化系统"),
-    ("DR010", "对乙酰氨基酚片", 7.50, "西药", 500, 40, 0, 0.55, "解热镇痛"),
-    ("DR011", "左氧氟沙星片", 28.00, "西药", 180, 15, 1, 0.70, "抗生素"),
-    ("DR012", "辛伐他汀片", 38.00, "西药", 160, 12, 0, 0.75, "心血管"),
-    ("DR013", "雷贝拉唑钠肠溶片", 55.00, "西药", 100, 10, 0, 0.65, "消化系统"),
-    ("DR014", "苯磺酸氨氯地平片", 24.00, "西药", 200, 18, 0, 0.75, "心血管"),
-    ("DR015", "阿卡波糖片", 42.00, "西药", 150, 12, 0, 0.80, "内分泌"),
-    ("DR016", "醋酸泼尼松片", 6.00, "西药", 300, 25, 1, 0.50, "激素类"),
-    ("DR017", "呋塞米片", 9.00, "西药", 250, 20, 0, 0.70, "利尿剂"),
-    ("DR018", "硝苯地平控释片", 48.00, "西药", 120, 10, 0, 0.75, "心血管"),
-    ("DR019", "格列美脲片", 38.00, "西药", 130, 10, 0, 0.80, "内分泌"),
-    ("DR020", "异丙嗪片", 4.50, "西药", 400, 30, 0, 0.40, "抗过敏"),
-    ("DR021", "黄连素片", 12.00, "中成药", 250, 20, 0, 0.60, "清热解毒"),
-    ("DR022", "板蓝根颗粒", 15.00, "中成药", 350, 30, 0, 0.50, "清热解毒"),
-    ("DR023", "六味地黄丸", 28.00, "中成药", 200, 15, 0, 0.40, "补益类"),
-    ("DR024", "速效救心丸", 35.00, "中成药", 180, 15, 0, 0.55, "心血管"),
-    ("DR025", "云南白药气雾剂", 42.00, "中成药", 100, 10, 0, 0.30, "骨伤科"),
-    ("DR026", "藿香正气软胶囊", 18.00, "中成药", 220, 18, 0, 0.50, "解表祛暑"),
-    ("DR027", "牛黄解毒片", 8.00, "中成药", 300, 25, 0, 0.45, "清热解毒"),
-    ("DR028", "乌鸡白凤丸", 48.00, "中成药", 80, 8, 0, 0.35, "补益类"),
-    ("DR029", "复方丹参滴丸", 32.00, "中成药", 200, 15, 0, 0.60, "心血管"),
-    ("DR030", "银翘解毒丸", 14.00, "中成药", 280, 22, 0, 0.50, "解表剂"),
-    ("DR031", "氯化钠注射液", 5.00, "注射液", 600, 50, 0, 0.90, "输液类"),
-    ("DR032", "葡萄糖注射液(5%)", 5.50, "注射液", 500, 40, 0, 0.90, "输液类"),
-    ("DR033", "葡萄糖注射液(10%)", 5.50, "注射液", 500, 40, 0, 0.90, "输液类"),
-    ("DR034", "乳酸钠林格注射液", 8.00, "注射液", 300, 25, 0, 0.85, "输液类"),
-    ("DR035", "甲硝唑氯化钠注射液", 12.00, "注射液", 200, 18, 1, 0.70, "抗生素"),
-    ("DR036", "注射用青霉素钠", 3.50, "注射液", 400, 30, 1, 0.75, "抗生素"),
-    ("DR037", "注射用头孢曲松钠", 15.00, "注射液", 150, 12, 1, 0.70, "抗生素"),
-    ("DR038", "地塞米松磷酸钠注射液", 2.00, "注射液", 350, 30, 1, 0.60, "激素类"),
-    ("DR039", "维生素C注射液", 1.50, "注射液", 400, 30, 0, 0.50, "维生素类"),
-    ("DR040", "胰岛素注射液", 48.00, "注射液", 100, 8, 1, 0.80, "内分泌"),
-    ("DR041", "多潘立酮片", 14.00, "西药", 220, 18, 0, 0.55, "消化系统"),
-    ("DR042", "碳酸钙D3片", 35.00, "西药", 180, 15, 0, 0.30, "维生素类"),
-    ("DR043", "厄贝沙坦片", 28.00, "西药", 200, 15, 0, 0.75, "心血管"),
-    ("DR044", "非那雄胺片", 55.00, "西药", 90, 8, 0, 0.65, "泌尿系统"),
-    ("DR045", "坦索罗辛胶囊", 42.00, "西药", 100, 8, 0, 0.70, "泌尿系统"),
-    ("DR046", "美托洛尔缓释片", 32.00, "西药", 160, 12, 0, 0.75, "心血管"),
-    ("DR047", "瑞舒伐他汀钙片", 52.00, "西药", 120, 10, 0, 0.75, "心血管"),
-    ("DR048", "埃索美拉唑镁肠溶片", 58.00, "西药", 80, 8, 0, 0.65, "消化系统"),
-    ("DR049", "氟西汀胶囊", 68.00, "西药", 60, 5, 1, 0.50, "精神科"),
-    ("DR050", "阿普唑仑片", 15.00, "西药", 150, 12, 1, 0.40, "精神科"),
-    ("DR051", "氨溴索口服液", 22.00, "西药", 200, 15, 0, 0.60, "呼吸系统"),
-    ("DR052", "复方甘草口服液", 10.00, "西药", 280, 22, 0, 0.45, "呼吸系统"),
-    ("DR053", "沙丁胺醇吸入剂", 28.00, "西药", 130, 10, 0, 0.70, "呼吸系统"),
-    ("DR054", "布地奈德吸入剂", 85.00, "西药", 70, 5, 1, 0.65, "呼吸系统"),
-    ("DR055", "氯霉素滴眼液", 8.00, "西药", 300, 25, 0, 0.40, "眼科"),
-    ("DR056", "维生素AD滴剂", 18.00, "西药", 200, 15, 0, 0.30, "维生素类"),
-    ("DR057", "钙尔奇D咀嚼片", 45.00, "西药", 150, 12, 0, 0.25, "维生素类"),
-    ("DR058", "消旋山莨菪碱片", 5.00, "西药", 350, 30, 0, 0.60, "消化系统"),
-    ("DR059", "复方氨酚烷胺片", 14.00, "西药", 300, 25, 0, 0.50, "解热镇痛"),
-    ("DR060", "维C银翘片", 9.00, "中成药", 350, 30, 0, 0.45, "解表剂"),
+DRUG_DATA = [
+    ("阿莫西林胶囊", 18.50, "西药", 300, 20, 0, 0.70, "抗生素"),
+    ("布洛芬缓释片", 26.00, "西药", 200, 15, 0, 0.60, "解热镇痛"),
+    ("阿司匹林肠溶片", 8.50, "西药", 400, 30, 0, 0.80, "抗血小板"),
+    ("头孢克洛胶囊", 32.00, "西药", 150, 10, 1, 0.70, "抗生素"),
+    ("奥美拉唑肠溶片", 45.00, "西药", 180, 12, 0, 0.65, "消化系统"),
+    ("氨氯地平片", 22.00, "西药", 250, 20, 0, 0.75, "心血管"),
+    ("二甲双胍缓释片", 35.00, "西药", 300, 25, 0, 0.80, "内分泌"),
+    ("氯雷他定片", 12.00, "西药", 350, 30, 0, 0.50, "抗过敏"),
+    ("蒙脱石散", 16.00, "西药", 200, 15, 0, 0.60, "消化系统"),
+    ("对乙酰氨基酚片", 7.50, "西药", 500, 40, 0, 0.55, "解热镇痛"),
+    ("左氧氟沙星片", 28.00, "西药", 180, 15, 1, 0.70, "抗生素"),
+    ("辛伐他汀片", 38.00, "西药", 160, 12, 0, 0.75, "心血管"),
+    ("雷贝拉唑钠肠溶片", 55.00, "西药", 100, 10, 0, 0.65, "消化系统"),
+    ("苯磺酸氨氯地平片", 24.00, "西药", 200, 18, 0, 0.75, "心血管"),
+    ("阿卡波糖片", 42.00, "西药", 150, 12, 0, 0.80, "内分泌"),
+    ("醋酸泼尼松片", 6.00, "西药", 300, 25, 1, 0.50, "激素类"),
+    ("呋塞米片", 9.00, "西药", 250, 20, 0, 0.70, "利尿剂"),
+    ("硝苯地平控释片", 48.00, "西药", 120, 10, 0, 0.75, "心血管"),
+    ("格列美脲片", 38.00, "西药", 130, 10, 0, 0.80, "内分泌"),
+    ("异丙嗪片", 4.50, "西药", 400, 30, 0, 0.40, "抗过敏"),
+    ("黄连素片", 12.00, "中成药", 250, 20, 0, 0.60, "清热解毒"),
+    ("板蓝根颗粒", 15.00, "中成药", 350, 30, 0, 0.50, "清热解毒"),
+    ("六味地黄丸", 28.00, "中成药", 200, 15, 0, 0.40, "补益类"),
+    ("速效救心丸", 35.00, "中成药", 180, 15, 0, 0.55, "心血管"),
+    ("云南白药气雾剂", 42.00, "中成药", 100, 10, 0, 0.30, "骨伤科"),
+    ("藿香正气软胶囊", 18.00, "中成药", 220, 18, 0, 0.50, "解表祛暑"),
+    ("牛黄解毒片", 8.00, "中成药", 300, 25, 0, 0.45, "清热解毒"),
+    ("乌鸡白凤丸", 48.00, "中成药", 80, 8, 0, 0.35, "补益类"),
+    ("复方丹参滴丸", 32.00, "中成药", 200, 15, 0, 0.60, "心血管"),
+    ("银翘解毒丸", 14.00, "中成药", 280, 22, 0, 0.50, "解表剂"),
+    ("氯化钠注射液", 5.00, "注射液", 600, 50, 0, 0.90, "输液类"),
+    ("葡萄糖注射液(5%)", 5.50, "注射液", 500, 40, 0, 0.90, "输液类"),
+    ("葡萄糖注射液(10%)", 5.50, "注射液", 500, 40, 0, 0.90, "输液类"),
+    ("乳酸钠林格注射液", 8.00, "注射液", 300, 25, 0, 0.85, "输液类"),
+    ("甲硝唑氯化钠注射液", 12.00, "注射液", 200, 18, 1, 0.70, "抗生素"),
+    ("注射用青霉素钠", 3.50, "注射液", 400, 30, 1, 0.75, "抗生素"),
+    ("注射用头孢曲松钠", 15.00, "注射液", 150, 12, 1, 0.70, "抗生素"),
+    ("地塞米松磷酸钠注射液", 2.00, "注射液", 350, 30, 1, 0.60, "激素类"),
+    ("维生素C注射液", 1.50, "注射液", 400, 30, 0, 0.50, "维生素类"),
+    ("胰岛素注射液", 48.00, "注射液", 100, 8, 1, 0.80, "内分泌"),
+    ("多潘立酮片", 14.00, "西药", 220, 18, 0, 0.55, "消化系统"),
+    ("碳酸钙D3片", 35.00, "西药", 180, 15, 0, 0.30, "维生素类"),
+    ("厄贝沙坦片", 28.00, "西药", 200, 15, 0, 0.75, "心血管"),
+    ("非那雄胺片", 55.00, "西药", 90, 8, 0, 0.65, "泌尿系统"),
+    ("坦索罗辛胶囊", 42.00, "西药", 100, 8, 0, 0.70, "泌尿系统"),
+    ("美托洛尔缓释片", 32.00, "西药", 160, 12, 0, 0.75, "心血管"),
+    ("瑞舒伐他汀钙片", 52.00, "西药", 120, 10, 0, 0.75, "心血管"),
+    ("埃索美拉唑镁肠溶片", 58.00, "西药", 80, 8, 0, 0.65, "消化系统"),
+    ("氟西汀胶囊", 68.00, "西药", 60, 5, 1, 0.50, "精神科"),
+    ("阿普唑仑片", 15.00, "西药", 150, 12, 1, 0.40, "精神科"),
+    ("氨溴索口服液", 22.00, "西药", 200, 15, 0, 0.60, "呼吸系统"),
+    ("复方甘草口服液", 10.00, "西药", 280, 22, 0, 0.45, "呼吸系统"),
+    ("沙丁胺醇吸入剂", 28.00, "西药", 130, 10, 0, 0.70, "呼吸系统"),
+    ("布地奈德吸入剂", 85.00, "西药", 70, 5, 1, 0.65, "呼吸系统"),
+    ("氯霉素滴眼液", 8.00, "西药", 300, 25, 0, 0.40, "眼科"),
+    ("维生素AD滴剂", 18.00, "西药", 200, 15, 0, 0.30, "维生素类"),
+    ("钙尔奇D咀嚼片", 45.00, "西药", 150, 12, 0, 0.25, "维生素类"),
+    ("消旋山莨菪碱片", 5.00, "西药", 350, 30, 0, 0.60, "消化系统"),
+    ("复方氨酚烷胺片", 14.00, "西药", 300, 25, 0, 0.50, "解热镇痛"),
+    ("维C银翘片", 9.00, "中成药", 350, 30, 0, 0.45, "解表剂"),
 ]
 
-drugs = list(DRUG_LIST)
+drugs = []
+drug_base_dt = datetime(2024, 5, 1, 10, 0, 0)
+for i, (name, price, dtype, stock_num, warn_line, is_special, reimb, cat) in enumerate(DRUG_DATA):
+    drug_dt = drug_base_dt + timedelta(seconds=i * 7200)
+    drug_id = generate_timestamp_id("DRG", drug_dt)
+    drugs.append((drug_id, name, price, dtype, stock_num, warn_line, is_special, reimb, cat))
 NUM_DRUGS = len(drugs)
 
 # ============================================================
@@ -312,8 +339,10 @@ WARD_TYPES = [
 ]
 
 wards = []
+ward_base_dt = datetime(2023, 10, 1, 10, 0, 0)
 for i in range(100):
-    wid = f"W{i+1:03d}"
+    ward_dt = ward_base_dt + timedelta(seconds=i * 3600)
+    wid = generate_timestamp_id("WRD", ward_dt)
     wtype = random.choice(WARD_TYPES)
     total = random.randint(3, 12)
     remain = random.randint(0, total)
@@ -325,14 +354,14 @@ for i in range(100):
 # ============================================================
 
 TIME_SLOTS = ["上午(08:00-12:00)", "下午(14:00-18:00)"]
-schedule_id_counter = 0
 
 schedules = []
 for doc_id, _, _, _, _, _ in doctors:
     for d in daterange(TODAY, TODAY + timedelta(days=6)):
         for slot in TIME_SLOTS:
-            schedule_id_counter += 1
-            sid = f"S{schedule_id_counter:06d}"
+            hour = 8 if "上午" in slot else 14
+            sch_dt = datetime(d.year, d.month, d.day, hour, 0, 0)
+            sid = generate_timestamp_id("SCH", sch_dt)
             status = "正常" if random.random() > 0.05 else "停诊"
             max_appt = random.randint(10, 25)
             max_onsite = random.randint(5, 10)
@@ -342,7 +371,6 @@ for doc_id, _, _, _, _, _ in doctors:
 # 8. Appointments (realistic mix of statuses)
 # ============================================================
 
-appointment_id_counter = 0
 appointments = []
 SLOTS_7 = [
     "上午(08:00-12:00)", "下午(14:00-18:00)",
@@ -354,8 +382,6 @@ SLOTS_7 = [
 for d in daterange(TODAY - timedelta(days=30), TODAY - timedelta(days=1)):
     n_appts = random.randint(8, 20)
     for _ in range(n_appts):
-        appointment_id_counter += 1
-        appt_id = f"APT{appointment_id_counter:08d}"
         patient = random.choice(patients)
         pid = patient[0]
         dept_id = random.choice(departments)[0]
@@ -373,6 +399,8 @@ for d in daterange(TODAY - timedelta(days=30), TODAY - timedelta(days=1)):
         paid = 1 if status != "已爽约" else random.choice([0, 1])
         create_d = d - timedelta(days=random.randint(0, 3))
         create_time = random_datetime_str(create_d)
+        apt_dt = datetime.strptime(create_time, "%Y-%m-%d %H:%M:%S")
+        appt_id = generate_timestamp_id("APT", apt_dt)
         appointments.append((appt_id, pid, doc_id, dept_id, date_str(d),
                             slot, status, create_time, fee, paid))
 
@@ -380,8 +408,6 @@ for d in daterange(TODAY - timedelta(days=30), TODAY - timedelta(days=1)):
 for d in daterange(TODAY, TODAY + timedelta(days=6)):
     n_appts = random.randint(5, 15)
     for _ in range(n_appts):
-        appointment_id_counter += 1
-        appt_id = f"APT{appointment_id_counter:08d}"
         patient = random.choice(patients)
         pid = patient[0]
         dept_id = random.choice(departments)[0]
@@ -392,6 +418,8 @@ for d in daterange(TODAY, TODAY + timedelta(days=6)):
         paid = random.choice([0, 1])
         create_d = TODAY - timedelta(days=random.randint(0, 5))
         create_time = random_datetime_str(create_d)
+        apt_dt = datetime.strptime(create_time, "%Y-%m-%d %H:%M:%S")
+        appt_id = generate_timestamp_id("APT", apt_dt)
         appointments.append((appt_id, pid, doc_id, dept_id, date_str(d),
                             slot, status, create_time, fee, paid))
 
@@ -399,7 +427,6 @@ for d in daterange(TODAY, TODAY + timedelta(days=6)):
 # 9. Onsite registrations (today only)
 # ============================================================
 
-onsite_id_counter = 0
 onsite_regs = []
 queue_counters = {}  # (doctor_id, dept_id) -> next queue number
 
@@ -409,8 +436,6 @@ for doc_id, _, _, dept_id, _, _ in doctors:
         queue_counters[(doc_id, dept_id)] = 1
 
     for _ in range(n_onsite):
-        onsite_id_counter += 1
-        os_id = f"OS{onsite_id_counter:06d}"
         patient = random.choice(patients)
         pid = patient[0]
 
@@ -434,13 +459,14 @@ for doc_id, _, _, dept_id, _, _ in doctors:
         create_min = random.randint(0, 59)
         create_sec = random.randint(0, 59)
         create_time = f"{date_str(TODAY)} {create_hour:02d}:{create_min:02d}:{create_sec:02d}"
+        os_dt = datetime.strptime(create_time, "%Y-%m-%d %H:%M:%S")
+        os_id = generate_timestamp_id("OS", os_dt)
         onsite_regs.append((os_id, pid, doc_id, dept_id, qn, status, create_time))
 
 # ============================================================
 # 10. Medical records (one per 已就诊 appointment)
 # ============================================================
 
-record_id_counter = 0
 medical_records = []
 
 past_apts = [a for a in appointments if a[6] == "已就诊"]
@@ -451,20 +477,19 @@ for appt in past_apts:
     if random.random() > 0.85:
         continue
 
-    record_id_counter += 1
-    rec_id = f"MR{record_id_counter:08d}"
     diag_info = random.choice(DIAGNOSES)
     diagnosis_text = f"{diag_info[0]} | {diag_info[1]}"
     rec_status = random.choice(["已就诊", "已就诊", "已就诊", "已归档"])
     appt_date = appt[4]
     diag_time = random_datetime_str(datetime.strptime(appt_date, "%Y-%m-%d").date() + timedelta(days=0))
+    rec_dt = datetime.strptime(diag_time, "%Y-%m-%d %H:%M:%S")
+    rec_id = generate_timestamp_id("MR", rec_dt)
     medical_records.append((rec_id, appt[1], appt[2], appt[0], diagnosis_text, diag_time, rec_status))
 
 # ============================================================
 # 11. Prescriptions (1-4 per medical record)
 # ============================================================
 
-prescription_id_counter = 0
 prescriptions = []
 drug_list_simple = [(d[0], d[1], d[2]) for d in drugs]  # drug_id, name, price
 
@@ -477,12 +502,12 @@ for rec in medical_records:
 
     n_rx = random.choices([0, 1, 2, 3], weights=[0.25, 0.35, 0.25, 0.15])[0]
     for _ in range(n_rx):
-        prescription_id_counter += 1
-        rx_id = f"PR{prescription_id_counter:08d}"
         drug = random.choice(drug_list_simple)
         drug_id, drug_name, drug_price = drug
         qty = random.randint(1, 5)
         total = round(qty * drug_price, 2)
+        rx_dt = datetime.strptime(diag_time, "%Y-%m-%d %H:%M:%S")
+        rx_id = generate_timestamp_id("PR", rx_dt)
         # prescription date same as diagnosis
         prescriptions.append((rx_id, rec_id, patient_id, doctor_id, drug_id,
                              qty, total, diag_time))
@@ -491,7 +516,6 @@ for rec in medical_records:
 # 12. Ward calls (scattered over past 30 days)
 # ============================================================
 
-ward_call_id_counter = 0
 ward_calls = []
 CALL_STATUSES = ["待响应", "已响应", "已处理", "已完成"]
 CALL_MESSAGES = [
@@ -501,8 +525,6 @@ CALL_MESSAGES = [
 ]
 
 for _ in range(150):
-    ward_call_id_counter += 1
-    call_id = f"WC{ward_call_id_counter:06d}"
     ward = random.choice(wards)
     wid = ward[0]
     patient = random.choice(patients)
@@ -512,6 +534,8 @@ for _ in range(150):
     status = random.choice(CALL_STATUSES)
     call_d = TODAY - timedelta(days=random.randint(0, 30))
     create_time = random_datetime_str(call_d)
+    wc_dt = datetime.strptime(create_time, "%Y-%m-%d %H:%M:%S")
+    call_id = generate_timestamp_id("WC", wc_dt)
     ward_calls.append((call_id, wid, dept_id, pid, msg, status, create_time))
 
 # ============================================================
@@ -545,7 +569,6 @@ TEMPLATES = [
 # 14. Logs
 # ============================================================
 
-log_id_counter = 0
 logs = []
 
 actions = [
@@ -557,14 +580,14 @@ actions = [
 ]
 
 for _ in range(100):
-    log_id_counter += 1
-    lid = f"L{log_id_counter:08d}"
     action, target = random.choice(actions)
     operator = random.choice(["patient1", "doctor1", "admin"] + [u[0] for u in all_users[:50]])
     target_id = f"ID{random.randint(10000, 99999)}"
     detail = ""
     log_d = TODAY - timedelta(days=random.randint(0, 30))
     create_time = random_datetime_str(log_d)
+    log_dt = datetime.strptime(create_time, "%Y-%m-%d %H:%M:%S")
+    lid = generate_timestamp_id("L", log_dt)
     logs.append((lid, operator, action, target, target_id, detail, create_time))
 
 # ============================================================
@@ -601,7 +624,7 @@ write_tsv("users.txt",
 # drugs
 write_tsv("drugs.txt",
     "# drug_id\tname\tprice\tstock_num\twarning_line\tis_special\treimbursement_ratio\tcategory",
-    [(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]) for d in drugs])
+    [(d[0], d[1], d[2], d[4], d[5], d[6], d[7], d[8]) for d in drugs])  # skip d[3]=type, include d[8]=category
 
 # wards
 write_tsv("wards.txt",
