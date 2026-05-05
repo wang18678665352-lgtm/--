@@ -376,6 +376,27 @@ static int has_registration_conflict_gui(const char *patient_id, const char *doc
     return 0;
 }
 
+static int has_any_schedule_today(void) {
+    char today[12];
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    snprintf(today, sizeof(today), "%04d-%02d-%02d",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday);
+
+    ScheduleNode *schedules = load_schedules_list();
+    if (!schedules) return 0;
+    int found = 0;
+    for (ScheduleNode *s = schedules; s; s = s->next) {
+        if (strcmp(s->data.work_date, today) == 0 &&
+            strcmp(s->data.status, "正常") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    free_schedule_list(schedules);
+    return found;
+}
+
 static void RefreshOnsiteDoctorList(HWND hDlg, const char *deptId) {
     HWND hLV = GetDlgItem(hDlg, IDC_ONSITE_DOCLIST);
     if (!hLV) return;
@@ -389,11 +410,13 @@ static void RefreshOnsiteDoctorList(HWND hDlg, const char *deptId) {
                  tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday);
     }
 
+    int useSchedFilter = has_any_schedule_today();
+
     DoctorNode *docs = load_doctors_list();
     int row = 0;
     for (DoctorNode *d = docs; d; d = d->next) {
         if (strcmp(d->data.department_id, deptId) != 0) continue;
-        if (!has_doctor_schedule(d->data.doctor_id, today)) continue;
+        if (useSchedFilter && !has_doctor_schedule(d->data.doctor_id, today)) continue;
 
         int used = count_onsite_today_gui(d->data.doctor_id);
         int remain = ONSITE_SLOTS_PER_DAY - used;
