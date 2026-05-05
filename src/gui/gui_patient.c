@@ -312,6 +312,7 @@ static int has_duplicate_appointment(const char *patient_id,
 #define IDC_REG_TIME    3104
 #define IDC_REG_OK      3105
 #define IDC_REG_STATUS  3106
+#define IDC_REG_QUEUE   3107
 
 static int g_regResult = 0;
 
@@ -381,6 +382,12 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
         SendMessage(hTime, CB_SETCURSEL, 0, 0);
         y += 35;
 
+        /* 排队信息显示 / Queue info display */
+        CreateWindowA("STATIC", "选择医生、日期和时段后将显示排队人数",
+            WS_VISIBLE|WS_CHILD|SS_LEFT,
+            20, y, 340, 20, hDlg, (HMENU)IDC_REG_QUEUE, g_hInst, NULL);
+        y += 28;
+
         CreateWindowA("BUTTON", "确认挂号", WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON,
             50, y, 120, 30, hDlg, (HMENU)IDC_REG_OK, g_hInst, NULL);
         CreateWindowA("STATIC", "", WS_VISIBLE|WS_CHILD|SS_CENTER,
@@ -422,6 +429,100 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                 free_doctor_list(docs);
             }
             SendMessage(hDoc, CB_SETCURSEL, 0, 0);
+            /* 更新排队信息 / Refresh queue info after doctor list change */
+            {
+                HWND hDate = GetDlgItem(hDlg, IDC_REG_DATE);
+                HWND hTime = GetDlgItem(hDlg, IDC_REG_TIME);
+                int dSel = (int)SendMessage(hDate, CB_GETCURSEL, 0, 0);
+                int tSel = (int)SendMessage(hTime, CB_GETCURSEL, 0, 0);
+                if (dSel != CB_ERR && tSel != CB_ERR) {
+                    char dateStr[20] = {0};
+                    time_t t2 = time(NULL) + dSel * 86400;
+                    struct tm *tm = localtime(&t2);
+                    snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
+                             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+                    char timeSlot[64] = {0};
+                    SendMessageA(hTime, CB_GETLBTEXT, (WPARAM)tSel, (LPARAM)timeSlot);
+
+                    HWND hDoc2 = GetDlgItem(hDlg, IDC_REG_DOCTOR);
+                    int docSel2 = (int)SendMessage(hDoc2, CB_GETCURSEL, 0, 0);
+                    if (docSel2 != CB_ERR) {
+                        char docLabel2[150] = {0};
+                        SendMessageA(hDoc2, CB_GETLBTEXT, (WPARAM)docSel2, (LPARAM)docLabel2);
+                        char docName2[100] = {0};
+                        char *dash = strstr(docLabel2, " - ");
+                        if (dash) {
+                            size_t len = dash - docLabel2;
+                            if (len >= sizeof(docName2)) len = sizeof(docName2)-1;
+                            memcpy(docName2, docLabel2, len);
+                            docName2[len] = 0;
+                        } else strcpy(docName2, docLabel2);
+
+                        DoctorNode *docs2 = load_doctors_list();
+                        char docId2[20] = {0};
+                        for (DoctorNode *d2 = docs2; d2; d2 = d2->next)
+                            if (strcmp(d2->data.name, docName2) == 0)
+                                { strcpy(docId2, d2->data.doctor_id); break; }
+                        free_doctor_list(docs2);
+
+                        if (strlen(docId2) > 0) {
+                            int qty = count_slot_appointments(docId2, dateStr, timeSlot);
+                            char qInfo[128];
+                            snprintf(qInfo, sizeof(qInfo),
+                                "当前排队: %d/%d 人 (医生: %s, 时段: %s)",
+                                qty, MAX_PER_SLOT, docName2, timeSlot);
+                            SetDlgItemTextA(hDlg, IDC_REG_QUEUE, qInfo);
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        /* 医生/日期/时段变化时刷新排队信息 / Refresh queue on doctor/date/time change */
+        if (HIWORD(wParam) == CBN_SELCHANGE &&
+            (LOWORD(wParam) == IDC_REG_DOCTOR ||
+             LOWORD(wParam) == IDC_REG_DATE ||
+             LOWORD(wParam) == IDC_REG_TIME)) {
+            HWND hDateQ = GetDlgItem(hDlg, IDC_REG_DATE);
+            HWND hTimeQ = GetDlgItem(hDlg, IDC_REG_TIME);
+            HWND hDocQ  = GetDlgItem(hDlg, IDC_REG_DOCTOR);
+            int dSelQ = (int)SendMessage(hDateQ, CB_GETCURSEL, 0, 0);
+            int tSelQ = (int)SendMessage(hTimeQ, CB_GETCURSEL, 0, 0);
+            int docSelQ = (int)SendMessage(hDocQ, CB_GETCURSEL, 0, 0);
+            if (dSelQ != CB_ERR && tSelQ != CB_ERR && docSelQ != CB_ERR) {
+                char dateStrQ[20] = {0};
+                time_t tQ = time(NULL) + dSelQ * 86400;
+                struct tm *tmQ = localtime(&tQ);
+                snprintf(dateStrQ, sizeof(dateStrQ), "%04d-%02d-%02d",
+                         tmQ->tm_year + 1900, tmQ->tm_mon + 1, tmQ->tm_mday);
+                char timeSlotQ[64] = {0};
+                SendMessageA(hTimeQ, CB_GETLBTEXT, (WPARAM)tSelQ, (LPARAM)timeSlotQ);
+                char docLabelQ[150] = {0};
+                SendMessageA(hDocQ, CB_GETLBTEXT, (WPARAM)docSelQ, (LPARAM)docLabelQ);
+                char docNameQ[100] = {0};
+                char *dashQ = strstr(docLabelQ, " - ");
+                if (dashQ) {
+                    size_t lenQ = dashQ - docLabelQ;
+                    if (lenQ >= sizeof(docNameQ)) lenQ = sizeof(docNameQ)-1;
+                    memcpy(docNameQ, docLabelQ, lenQ);
+                    docNameQ[lenQ] = 0;
+                } else strcpy(docNameQ, docLabelQ);
+                DoctorNode *docsQ = load_doctors_list();
+                char docIdQ[20] = {0};
+                for (DoctorNode *dQ = docsQ; dQ; dQ = dQ->next)
+                    if (strcmp(dQ->data.name, docNameQ) == 0)
+                        { strcpy(docIdQ, dQ->data.doctor_id); break; }
+                free_doctor_list(docsQ);
+                if (strlen(docIdQ) > 0) {
+                    int qtyQ = count_slot_appointments(docIdQ, dateStrQ, timeSlotQ);
+                    char qInfoQ[128];
+                    snprintf(qInfoQ, sizeof(qInfoQ),
+                        "当前排队: %d/%d 人 | %s - %s",
+                        qtyQ, MAX_PER_SLOT, docNameQ, timeSlotQ);
+                    SetDlgItemTextA(hDlg, IDC_REG_QUEUE, qInfoQ);
+                }
+            }
             return 0;
         }
 
@@ -587,7 +688,7 @@ static int ShowRegDialog(HWND hParent) {
 
     HWND hDlg = CreateWindowExA(0, "PatientRegDialog", "预约挂号",
         WS_VISIBLE|WS_POPUPWINDOW|WS_CAPTION|WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 400, 290,
+        CW_USEDEFAULT, CW_USEDEFAULT, 400, 330,
         hParent, NULL, g_hInst, NULL);
     if (!hDlg) return 0;
 
