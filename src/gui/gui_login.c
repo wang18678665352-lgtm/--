@@ -49,6 +49,7 @@
 #define IDC_REG_ROLE_DOCTOR  205 /* 医生单选 */
 #define IDC_REG_ROLE_PATIENT 206 /* 患者单选 */
 #define IDC_REG_DEPT      207    /* 科室下拉框 */
+#define IDC_REG_DEPT_LABEL 213   /* 科室标签 */
 #define IDC_REG_NAME      208    /* 姓名 */
 #define IDC_REG_TITLE     209    /* 职称 (预留) */
 #define IDC_REG_OK        210    /* 注册按钮 */
@@ -360,7 +361,7 @@ int ShowRegisterDialog(HINSTANCE hInst, HWND hParent) {
     y += 35;
 
     /* 科室 (下拉框，从文件加载) / Department (combo box, loaded from file) */
-    CreateLabel(hDlg, 0, "科室:", 20, y, 70, 20);
+    HWND hDeptLabel = CreateLabel(hDlg, IDC_REG_DEPT_LABEL, "科室:", 20, y, 70, 20);
     HWND hDept = CreateComboBox(hDlg, IDC_REG_DEPT, 100, y, 250, 200);
     DepartmentNode *depts = load_departments_list();
     if (depts) {
@@ -372,6 +373,8 @@ int ShowRegisterDialog(HINSTANCE hInst, HWND hParent) {
         SendMessage(hDept, CB_SETCURSEL, 0, 0);  /* 默认选中第一个 */
         free_department_list(depts);
     }
+    ShowWindow(hDeptLabel, SW_HIDE);
+    ShowWindow(hDept, SW_HIDE);
     y += 35;
 
     /* 分隔线 + 按钮 / Separator + buttons */
@@ -421,6 +424,15 @@ INT_PTR CALLBACK RegisterDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
     switch (msg) {
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case IDC_REG_ROLE_DOCTOR:
+        case IDC_REG_ROLE_PATIENT:
+        case IDC_REG_ROLE_ADMIN: {
+            /* 只有医生需要选科室 / Only doctors need department selection */
+            int show = (LOWORD(wParam) == IDC_REG_ROLE_DOCTOR) ? SW_SHOW : SW_HIDE;
+            ShowWindow(GetDlgItem(hDlg, IDC_REG_DEPT_LABEL), show);
+            ShowWindow(GetDlgItem(hDlg, IDC_REG_DEPT), show);
+            break;
+        }
         case IDC_REG_OK: {
             /* 收集所有字段 / Gather all fields */
             char username[50] = {0};
