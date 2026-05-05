@@ -158,7 +158,10 @@ for dept_id, dept_name, _, _ in departments:
     for _ in range(n):
         doctor_id_counter += 1
         doc_id = f"D{doctor_id_counter:04d}"
-        username = f"doctor{doctor_id_counter:04d}"
+        if doctor_id_counter == 1:
+            username = "doctor1"   # linked to test account
+        else:
+            username = f"doctor{doctor_id_counter:04d}"
         name = random_name()
         title = random.choice(DOCTOR_TITLES)
         busy = random.randint(0, 5)
@@ -181,7 +184,10 @@ patient_id_counter = 0
 for _ in range(500):
     patient_id_counter += 1
     pid = f"P{patient_id_counter:04d}"
-    username = f"patient{patient_id_counter:04d}"
+    if patient_id_counter == 1:
+        username = "patient1"  # linked to test account
+    else:
+        username = f"patient{patient_id_counter:04d}"
     gender = random.choice(["男", "女"])
     name = random_name(gender)
     age = random.randint(1, 90)
