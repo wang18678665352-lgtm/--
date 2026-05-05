@@ -1,3 +1,65 @@
+/*
+ * ============================================================================
+ * data_storage.c — 医院管理系统数据持久化层 (Data Persistence Layer)
+ * ============================================================================
+ *
+ * [中文]
+ * 本文件是医院管理系统的数据持久化核心，采用 C99 标准实现。所有数据以
+ * 制表符分隔的纯文本文件（.txt）存储在 data/ 目录下。文件格式特点：
+ *   - # 开头的行为注释/列标题行，读取时自动跳过
+ *   - 空白行自动跳过
+ *   - 字段间使用 Tab (\t) 分隔
+ *   - 字段值中如果包含 Tab、换行等特殊字符，使用 C 风格转义（\\, \t, \n, \r）
+ *     存储和读取时分别调用 escape_field / unescape_field_inplace 处理
+ *
+ * 数据组织方式：
+ *   - 运行时使用单向链表（Singly Linked List）在内存中管理实体
+ *   - 每种实体各有 create/free/count 三个链表操作函数
+ *   - 每种实体各有 load/save 两个文件读写函数，带列标题行
+ *   - 现场挂号（OnsiteRegistration）使用队列（Queue）结构，支持紧急插队
+ *
+ * 支持的实体类型（共14种）：
+ *   User, Patient, Doctor, Department, Drug, Ward, Appointment,
+ *   OnsiteRegistration, WardCall, MedicalRecord, Prescription,
+ *   Schedule, LogEntry, MedicalTemplate
+ *
+ * 额外功能：
+ *   - 医生 ID 生成：科室字母前缀 + 4位序号（如 A0001）
+ *   - 医生 ID 迁移：将旧版长 ID 转换为新版短格式，同步更新所有关联文件
+ *   - 操作日志：追加式记录所有增删改操作
+ *   - 数据备份/还原：时间戳命名备份目录，超过限制自动清理最旧备份
+ *
+ * [English]
+ * This file is the data persistence core of a hospital management system,
+ * implemented in C99. All data is stored as tab-delimited plain text files
+ * (.txt) under the data/ directory. File format characteristics:
+ *   - Lines starting with # are comments/column headers, skipped during load
+ *   - Blank lines are automatically skipped
+ *   - Fields are separated by Tab (\t)
+ *   - Fields containing Tab, newline, or other special characters use C-style
+ *     escaping (\\, \t, \n, \r) via escape_field / unescape_field_inplace
+ *
+ * Data organization:
+ *   - Singly linked lists are used for in-memory entity management at runtime
+ *   - Each entity type has create/free/count linked-list helper functions
+ *   - Each entity type has load/save file I/O functions with column header lines
+ *   - OnsiteRegistration uses a Queue structure, supporting emergency front-insert
+ *
+ * Supported entity types (14 total):
+ *   User, Patient, Doctor, Department, Drug, Ward, Appointment,
+ *   OnsiteRegistration, WardCall, MedicalRecord, Prescription,
+ *   Schedule, LogEntry, MedicalTemplate
+ *
+ * Additional features:
+ *   - Doctor ID generation: department letter prefix + 4-digit sequence (e.g., A0001)
+ *   - Doctor ID migration: converts old long IDs to new short format, updating all
+ *     cross-referenced files
+ *   - Operation log: append-only recording of all CRUD operations
+ *   - Data backup/restore: timestamped backup directories with auto-cleanup
+ *     of oldest backups when exceeding the limit
+ * ============================================================================
+ */
+
 #include "data_storage.h"
 #include <sys/stat.h>
 #include <errno.h>
@@ -12,14 +74,32 @@
 #include <sys/types.h>
 #endif
 
+/* 文本行最大缓冲区大小 / Maximum text line buffer size */
 #define TEXT_LINE_SIZE 4096
 
+/* ==========================================================================
+ * 第一部分：基础文件 I/O 辅助函数
+ * Part 1: Basic File I/O Helper Functions
+ * ========================================================================== */
+
+/*
+ * [中文] 从文件中读取一行有效数据（跳过空白行和 # 注释行）
+ * [English] Read one valid data line from file (skip blank lines and # comments)
+ *
+ * 工作流程 / Workflow:
+ *   1. fgets 读取一行
+ *   2. 去除行尾的 \n 和 \r
+ *   3. 如果是空白行或以 # 开头 → 跳过，继续读下一行
+ *   4. 返回 1 表示成功读取，0 表示 EOF
+ */
 static int read_data_line(FILE *fp, char *buffer, size_t size) {
     while (fgets(buffer, (int)size, fp)) {
         size_t len = strlen(buffer);
+        /* 去除行尾换行符 / Strip trailing newline characters */
         while (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r')) {
             buffer[--len] = '\0';
         }
+        /* 跳过空白行和 # 注释行 / Skip blank lines and # comment lines */
         if (buffer[0] == '\0' || buffer[0] == '#') {
             continue;
         }
@@ -28,6 +108,20 @@ static int read_data_line(FILE *fp, char *buffer, size_t size) {
     return 0;
 }
 
+/*
+ * [中文] 制表符分隔的字段解析器 — 每次调用返回下一个 Tab 分隔的字段
+ * [English] Tab-delimited token parser — each call returns the next tab-separated field
+ *
+ * 工作机制 / Mechanism:
+ *   - 在 *cursor 指向的字符串中查找下一个 \t
+ *   - 将 \t 替换为 \0（字符串终止符），返回当前字段起始地址
+ *   - 更新 *cursor 指向下一个字段的起始位置
+ *   - 如果没有更多 \t，则将 *cursor 置为 NULL（后续调用返回空字符串）
+ *
+ * 注意：这会修改原始字符串（将 Tab 替换为 NUL），但这对我们的一次性解析场景是安全的。
+ * Note: This modifies the original string (replacing Tab with NUL), which is safe
+ * for our one-pass parsing scenario.
+ */
 static char *next_token(char **cursor) {
     static char empty_buf[1] = {0};
     char *start = *cursor;
@@ -39,17 +133,56 @@ static char *next_token(char **cursor) {
 
     sep = strchr(start, '\t');
     if (sep) {
-        *sep = '\0';
-        *cursor = sep + 1;
+        *sep = '\0';           /* 将 Tab 替换为字符串终止符 / Replace Tab with NUL terminator */
+        *cursor = sep + 1;     /* 游标前进到下一个字段 / Advance cursor to next field */
     } else {
-        *cursor = NULL;
+        *cursor = NULL;        /* 无更多字段 / No more fields */
     }
 
     return start;
 }
 
-// ==================== 字段转义/反转义（防止数据中含 Tab/换行符破坏文件格式） ====================
+/* ==========================================================================
+ * 第二部分：字段转义/反转义 — 防止数据中的特殊字符破坏文件格式
+ * Part 2: Field Escape/Unescape — Protect file format from embedded special chars
+ * ==========================================================================
+ *
+ * [中文]
+ * 由于数据文件使用 Tab(\t) 和换行(\n) 作为结构分隔符，如果字段值本身包含
+ * 这些字符（例如诊断描述中有换行），就会破坏文件格式。因此引入 C 风格转义：
+ *
+ *   原始字符 → 转义后      说明
+ *   --------   --------    ----
+ *   \          \\          反斜杠自身
+ *   Tab        \t          制表符
+ *   \n         \n          换行符
+ *   \r         \r          回车符
+ *
+ * 写入时调用 escape_field（转义），读取后调用 unescape_field_inplace（反转义）。
+ *
+ * [English]
+ * Since data files use Tab(\t) and newline(\n) as structural delimiters, if a
+ * field value itself contains these characters (e.g., a diagnosis description
+ * with line breaks), it would corrupt the file format. C-style escaping is used:
+ *
+ *   Original → Escaped    Description
+ *   --------   --------   -----------
+ *   \          \\         Backslash itself
+ *   Tab        \t         Tab character
+ *   \n         \n         Newline
+ *   \r         \r         Carriage return
+ *
+ * escape_field is called when writing, unescape_field_inplace when reading.
+ */
 
+/*
+ * [中文] 将输入字符串中的特殊字符转义后写入输出缓冲区
+ * [English] Escape special characters from input string into output buffer
+ *
+ * j + 4 < output_size 确保即使下一个字符需要转义为2字节，也有足够的空间放
+ * 转义序列 + NUL 终止符。
+ * j + 4 < output_size ensures room for a 2-char escape sequence + safety margin + NUL.
+ */
 static void escape_field(const char *input, char *output, size_t output_size) {
     size_t j = 0;
     for (size_t i = 0; input[i] != '\0' && j + 4 < output_size; i++) {
@@ -69,6 +202,23 @@ static void escape_field(const char *input, char *output, size_t output_size) {
     output[j] = '\0';
 }
 
+/*
+ * [中文] 原地反转义 — 将字符串中的 \n, \t, \r, \\ 还原为真实字符
+ * [English] In-place unescape — restore \n, \t, \r, \\ to their real characters
+ *
+ * 算法说明 / Algorithm:
+ *   使用两个索引 i（读指针）和 j（写指针）在同一缓冲区中操作。
+ *   当读指针遇到 \ 时，检查下一个字符：
+ *     \\ → 写入一个 \
+ *     \t → 写入一个 Tab
+ *     \n → 写入一个换行
+ *     \r → 写入一个回车
+ *     否则 → 原样写入 \
+ *   j 始终 ≤ i，因此原地操作是安全的。
+ *   Uses two indices: i (read pointer) and j (write pointer) in the same buffer.
+ *   When read pointer encounters \, check the next character for the escape code.
+ *   Since j ≤ i always, in-place operation is safe.
+ */
 static void unescape_field_inplace(char *str) {
     size_t j = 0;
     for (size_t i = 0; str[i] != '\0'; i++) {
@@ -85,26 +235,52 @@ static void unescape_field_inplace(char *str) {
     str[j] = '\0';
 }
 
-// 保存时安全地写一个字符串字段（自动转义）
+/*
+ * [中文] 安全地写一个字符串字段到文件（自动转义特殊字符）
+ * [English] Safely write a string field to file (auto-escape special characters)
+ */
 static void fprintf_escaped(FILE *fp, const char *str) {
     char buf[4096];
     escape_field(str, buf, sizeof(buf));
     fprintf(fp, "%s", buf);
 }
 
+/* ==========================================================================
+ * 第三部分：字段类型解析工具
+ * Part 3: Token Parsing Utilities (int, float, bool)
+ * ========================================================================== */
+
+/* 解析下一个 token 为 int / Parse next token as int */
 static int parse_int_token(char **cursor) {
     return atoi(next_token(cursor));
 }
 
+/* 解析下一个 token 为 float / Parse next token as float */
 static float parse_float_token(char **cursor) {
     return (float)atof(next_token(cursor));
 }
 
+/*
+ * [中文] 解析下一个 token 为 bool — 支持 "1", "true", "TRUE" 三种形式
+ * [English] Parse next token as bool — accepts "1", "true", or "TRUE"
+ */
 static bool parse_bool_token(char **cursor) {
     const char *token = next_token(cursor);
     return strcmp(token, "1") == 0 || strcmp(token, "true") == 0 || strcmp(token, "TRUE") == 0;
 }
 
+/* ==========================================================================
+ * 第四部分：数据目录初始化
+ * Part 4: Data Directory Initialization
+ * ========================================================================== */
+
+/*
+ * [中文] 初始化数据存储 — 确保 data/ 目录存在，不存在则创建
+ * [English] Initialize data storage — ensure data/ directory exists, create if not
+ *
+ * Windows 使用 CreateDirectoryA，Unix 使用 mkdir(0755)。
+ * Windows uses CreateDirectoryA, Unix uses mkdir(0755).
+ */
 int init_data_storage(void) {
 #ifdef _WIN32
     DWORD dwAttrib = GetFileAttributesA(DATA_DIR);
@@ -126,7 +302,10 @@ int init_data_storage(void) {
     return SUCCESS;
 }
 
-// ==================== 链表操作函数 ====================
+/* ==========================================================================
+ * 第五部分：用户(User)链表操作 — 创建/释放/计数
+ * Part 5: User Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 UserNode* create_user_node(const User *user) {
     UserNode *node = (UserNode *)malloc(sizeof(UserNode));
@@ -137,6 +316,7 @@ UserNode* create_user_node(const User *user) {
     return node;
 }
 
+/* [中文] 释放整个用户链表 / [English] Free entire user linked list */
 void free_user_list(UserNode *head) {
     UserNode *current = head;
     while (current) {
@@ -146,6 +326,7 @@ void free_user_list(UserNode *head) {
     }
 }
 
+/* [中文] 统计用户链表节点数 / [English] Count nodes in user linked list */
 int count_user_list(UserNode *head) {
     int count = 0;
     UserNode *current = head;
@@ -155,6 +336,11 @@ int count_user_list(UserNode *head) {
     }
     return count;
 }
+
+/* ==========================================================================
+ * 第六部分：患者(Patient)链表操作 — 创建/释放/计数
+ * Part 6: Patient Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 PatientNode* create_patient_node(const Patient *patient) {
     PatientNode *node = (PatientNode *)malloc(sizeof(PatientNode));
@@ -184,6 +370,11 @@ int count_patient_list(PatientNode *head) {
     return count;
 }
 
+/* ==========================================================================
+ * 第七部分：医生(Doctor)链表操作 — 创建/释放/计数
+ * Part 7: Doctor Linked List Operations — Create/Free/Count
+ * ========================================================================== */
+
 DoctorNode* create_doctor_node(const Doctor *doctor) {
     DoctorNode *node = (DoctorNode *)malloc(sizeof(DoctorNode));
     if (node) {
@@ -211,6 +402,11 @@ int count_doctor_list(DoctorNode *head) {
     }
     return count;
 }
+
+/* ==========================================================================
+ * 第八部分：科室(Department)链表操作 — 创建/释放/计数
+ * Part 8: Department Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 DepartmentNode* create_department_node(const Department *department) {
     DepartmentNode *node = (DepartmentNode *)malloc(sizeof(DepartmentNode));
@@ -240,6 +436,11 @@ int count_department_list(DepartmentNode *head) {
     return count;
 }
 
+/* ==========================================================================
+ * 第九部分：药品(Drug)链表操作 — 创建/释放/计数
+ * Part 9: Drug Linked List Operations — Create/Free/Count
+ * ========================================================================== */
+
 DrugNode* create_drug_node(const Drug *drug) {
     DrugNode *node = (DrugNode *)malloc(sizeof(DrugNode));
     if (node) {
@@ -267,6 +468,11 @@ int count_drug_list(DrugNode *head) {
     }
     return count;
 }
+
+/* ==========================================================================
+ * 第十部分：病房(Ward)链表操作 — 创建/释放/计数
+ * Part 10: Ward Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 WardNode* create_ward_node(const Ward *ward) {
     WardNode *node = (WardNode *)malloc(sizeof(WardNode));
@@ -296,6 +502,11 @@ int count_ward_list(WardNode *head) {
     return count;
 }
 
+/* ==========================================================================
+ * 第十一部分：预约(Appointment)链表操作 — 创建/释放/计数
+ * Part 11: Appointment Linked List Operations — Create/Free/Count
+ * ========================================================================== */
+
 AppointmentNode* create_appointment_node(const Appointment *appointment) {
     AppointmentNode *node = (AppointmentNode *)malloc(sizeof(AppointmentNode));
     if (node) {
@@ -323,6 +534,29 @@ int count_appointment_list(AppointmentNode *head) {
     }
     return count;
 }
+
+/* ==========================================================================
+ * 第十二部分：现场挂号(OnsiteRegistration)队列操作
+ * Part 12: OnsiteRegistration Queue Operations
+ * ==========================================================================
+ *
+ * [中文]
+ * 现场挂号使用队列（Queue）结构而非普通链表。这是因为现场挂号需要 FIFO
+ * （先进先出）的就诊顺序，同时支持急诊患者插队到队首。
+ *
+ * enqueue_onsite_registration 的 front 参数：
+ *   - front=true  → 插入队首（急诊患者优先）
+ *   - front=false → 插入队尾（正常排队）
+ *
+ * [English]
+ * Onsite registration uses a Queue structure instead of a plain linked list,
+ * because it requires FIFO (first-in-first-out) visit ordering, with support
+ * for emergency patients to jump to the front of the queue.
+ *
+ * enqueue_onsite_registration front parameter:
+ *   - front=true  → insert at front (emergency patient priority)
+ *   - front=false → insert at rear (normal queue)
+ */
 
 OnsiteRegistrationNode* create_onsite_registration_node(const OnsiteRegistration *registration) {
     OnsiteRegistrationNode *node = (OnsiteRegistrationNode *)malloc(sizeof(OnsiteRegistrationNode));
@@ -352,6 +586,7 @@ int count_onsite_registration_list(OnsiteRegistrationNode *head) {
     return count;
 }
 
+/* [中文] 初始化空队列 / [English] Initialize an empty queue */
 void init_onsite_registration_queue(OnsiteRegistrationQueue *queue) {
     if (!queue) {
         return;
@@ -361,6 +596,20 @@ void init_onsite_registration_queue(OnsiteRegistrationQueue *queue) {
     queue->size = 0;
 }
 
+/*
+ * [中文] 入队操作 — 支持队首插入（急诊）和队尾插入（普通）
+ * [English] Enqueue operation — supports front insertion (emergency) and rear insertion (normal)
+ *
+ * 队首插入逻辑 / Front insertion logic:
+ *   新节点指向原队首 → 更新队首指针 → 如果队列原为空则同时更新队尾
+ *   New node points to old front → update front pointer → also update rear if was empty
+ *
+ * 队尾插入逻辑 / Rear insertion logic:
+ *   如果队列为空 → 队首队尾都指向新节点
+ *   如果队列非空 → 原队尾的 next 指向新节点 → 更新队尾指针
+ *   If empty → both front and rear point to new node
+ *   If not empty → old rear->next = new node → update rear pointer
+ */
 int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegistration *registration, bool front) {
     OnsiteRegistrationNode *node;
 
@@ -374,12 +623,12 @@ int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegi
     }
 
     if (front) {
-        // Insert at front (for emergency patients)
+        /* 急诊：插入队首 / Emergency: insert at front */
         node->next = queue->front;
         queue->front = node;
         if (!queue->rear) queue->rear = node;
     } else {
-        // Normal: insert at rear
+        /* 普通：插入队尾 / Normal: insert at rear */
         if (!queue->rear) {
             queue->front = node;
             queue->rear = node;
@@ -393,6 +642,10 @@ int enqueue_onsite_registration(OnsiteRegistrationQueue *queue, const OnsiteRegi
     return SUCCESS;
 }
 
+/*
+ * [中文] 出队操作 — 从队首取出一个挂号记录
+ * [English] Dequeue operation — remove a registration from the front of the queue
+ */
 int dequeue_onsite_registration(OnsiteRegistrationQueue *queue, OnsiteRegistration *registration) {
     OnsiteRegistrationNode *node;
 
@@ -407,7 +660,7 @@ int dequeue_onsite_registration(OnsiteRegistrationQueue *queue, OnsiteRegistrati
 
     queue->front = node->next;
     if (!queue->front) {
-        queue->rear = NULL;
+        queue->rear = NULL;  /* 队列已空 / Queue is now empty */
     }
 
     queue->size--;
@@ -415,6 +668,7 @@ int dequeue_onsite_registration(OnsiteRegistrationQueue *queue, OnsiteRegistrati
     return SUCCESS;
 }
 
+/* [中文] 释放整个队列（包括所有节点） / [English] Free entire queue (including all nodes) */
 void free_onsite_registration_queue(OnsiteRegistrationQueue *queue) {
     if (!queue) {
         return;
@@ -422,6 +676,11 @@ void free_onsite_registration_queue(OnsiteRegistrationQueue *queue) {
     free_onsite_registration_list(queue->front);
     init_onsite_registration_queue(queue);
 }
+
+/* ==========================================================================
+ * 第十三部分：病房呼叫(WardCall)链表操作 — 创建/释放/计数
+ * Part 13: WardCall Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 WardCallNode* create_ward_call_node(const WardCall *call) {
     WardCallNode *node = (WardCallNode *)malloc(sizeof(WardCallNode));
@@ -451,6 +710,11 @@ int count_ward_call_list(WardCallNode *head) {
     return count;
 }
 
+/* ==========================================================================
+ * 第十四部分：病历(MedicalRecord)链表操作 — 创建/释放/计数
+ * Part 14: MedicalRecord Linked List Operations — Create/Free/Count
+ * ========================================================================== */
+
 MedicalRecordNode* create_medical_record_node(const MedicalRecord *record) {
     MedicalRecordNode *node = (MedicalRecordNode *)malloc(sizeof(MedicalRecordNode));
     if (node) {
@@ -478,6 +742,11 @@ int count_medical_record_list(MedicalRecordNode *head) {
     }
     return count;
 }
+
+/* ==========================================================================
+ * 第十五部分：处方(Prescription)链表操作 — 创建/释放/计数
+ * Part 15: Prescription Linked List Operations — Create/Free/Count
+ * ========================================================================== */
 
 PrescriptionNode* create_prescription_node(const Prescription *prescription) {
     PrescriptionNode *node = (PrescriptionNode *)malloc(sizeof(PrescriptionNode));
@@ -507,7 +776,39 @@ int count_prescription_list(PrescriptionNode *head) {
     return count;
 }
 
-// ==================== 链表版本的数据加载和保存函数 ====================
+/* ==========================================================================
+ * 第十六部分：数据加载与保存 — 用户(User)
+ * Part 16: Data Load/Save — User
+ * ==========================================================================
+ *
+ * [中文]
+ * 加载模式 / Loading pattern:
+ *   1. 打开文件，逐行读取有效数据行（跳过注释/空行）
+ *   2. 使用 next_token 按 Tab 分割字段
+ *   3. 字符串字段在赋值前调用 unescape_field_inplace 反转义
+ *   4. 数值字段通过 parse_*_token 解析
+ *   5. 构建链表节点，追加到链表尾部（head/tail 指针跟踪）
+ *   6. 如果内存分配失败，释放已构建的链表并返回 NULL
+ *
+ * 保存模式 / Saving pattern:
+ *   1. 先写入 # 开头的列标题行
+ *   2. 遍历链表，每个字段用 fprintf_escaped 安全写入（自动转义特殊字符）
+ *   3. 字段间用 Tab 分隔，记录间用换行分隔
+ *
+ * [English]
+ * Loading pattern:
+ *   1. Open file, read valid data lines (skip comments/blanks)
+ *   2. Use next_token to split fields by Tab
+ *   3. String fields: call unescape_field_inplace before assigning
+ *   4. Numeric fields: parse via parse_*_token
+ *   5. Build linked list nodes, append to tail (head/tail pointer tracking)
+ *   6. On allocation failure, free the partial list and return NULL
+ *
+ * Saving pattern:
+ *   1. Write #-prefixed column header line first
+ *   2. Iterate list, write each field via fprintf_escaped (auto-escape)
+ *   3. Tab between fields, newline between records
+ */
 
 UserNode* load_users_list(void) {
     FILE *fp = fopen(USERS_FILE, "r");
@@ -523,6 +824,7 @@ UserNode* load_users_list(void) {
         char *cursor = line;
         User user;
         memset(&user, 0, sizeof(user));
+        /* 用户名字段不需要反转义（用户名不含特殊字符） / Username needs no unescape */
         strncpy(user.username, next_token(&cursor), sizeof(user.username) - 1);
         user.username[sizeof(user.username) - 1] = '\0';
         strncpy(user.password, next_token(&cursor), sizeof(user.password) - 1);
@@ -532,11 +834,12 @@ UserNode* load_users_list(void) {
 
         UserNode *node = create_user_node(&user);
         if (!node) {
-            free_user_list(head);
+            free_user_list(head);  /* 回滚已分配内存 / Rollback allocated memory */
             fclose(fp);
             return NULL;
         }
-        
+
+        /* 链表尾部追加 / Append to tail of linked list */
         if (!head) {
             head = node;
             tail = node;
@@ -545,7 +848,7 @@ UserNode* load_users_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -556,6 +859,7 @@ int save_users_list(UserNode *head) {
         return ERROR_FILE_IO;
     }
 
+    /* 列标题行（# 开头，加载时自动跳过） / Column header line (# prefix, auto-skipped on load) */
     fprintf(fp, "# username\tpassword\trole\n");
     UserNode *current = head;
     while (current) {
@@ -568,6 +872,11 @@ int save_users_list(UserNode *head) {
     fclose(fp);
     return SUCCESS;
 }
+
+/* ==========================================================================
+ * 第十七部分：数据加载与保存 — 患者(Patient)
+ * Part 17: Data Load/Save — Patient
+ * ========================================================================== */
 
 PatientNode* load_patients_list(void) {
     FILE *fp = fopen(PATIENTS_FILE, "r");
@@ -583,6 +892,7 @@ PatientNode* load_patients_list(void) {
         char *cursor = line;
         Patient patient;
         memset(&patient, 0, sizeof(patient));
+        /* 患者数据可能含特殊字符（地址等），需要反转义 / Patient data may contain special chars, need unescape */
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.patient_id, tk, sizeof(patient.patient_id) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.username, tk, sizeof(patient.username) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(patient.name, tk, sizeof(patient.name) - 1); }
@@ -600,7 +910,7 @@ PatientNode* load_patients_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -609,7 +919,7 @@ PatientNode* load_patients_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -627,18 +937,23 @@ int save_patients_list(PatientNode *head) {
         fprintf_escaped(fp, current->data.username); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.gender); fprintf(fp, "\t");
-        fprintf(fp, "%d\t", current->data.age);
+        fprintf(fp, "%d\t", current->data.age);              /* 数值字段无需转义 / Numeric field needs no escaping */
         fprintf_escaped(fp, current->data.phone); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.address); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.patient_type); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.treatment_stage); fprintf(fp, "\t");
-        fprintf(fp, "%d\n", current->data.is_emergency ? 1 : 0);
+        fprintf(fp, "%d\n", current->data.is_emergency ? 1 : 0);  /* bool 存为 0/1 / bool stored as 0/1 */
         current = current->next;
     }
 
     fclose(fp);
     return SUCCESS;
 }
+
+/* ==========================================================================
+ * 第十八部分：数据加载与保存 — 医生(Doctor)
+ * Part 18: Data Load/Save — Doctor
+ * ========================================================================== */
 
 DoctorNode* load_doctors_list(void) {
     FILE *fp = fopen(DOCTORS_FILE, "r");
@@ -667,7 +982,7 @@ DoctorNode* load_doctors_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -676,7 +991,7 @@ DoctorNode* load_doctors_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -703,6 +1018,11 @@ int save_doctors_list(DoctorNode *head) {
     return SUCCESS;
 }
 
+/* ==========================================================================
+ * 第十九部分：数据加载与保存 — 科室(Department)
+ * Part 19: Data Load/Save — Department
+ * ========================================================================== */
+
 DepartmentNode* load_departments_list(void) {
     FILE *fp = fopen(DEPARTMENTS_FILE, "r");
     if (!fp) {
@@ -728,7 +1048,7 @@ DepartmentNode* load_departments_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -737,7 +1057,7 @@ DepartmentNode* load_departments_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -762,6 +1082,11 @@ int save_departments_list(DepartmentNode *head) {
     return SUCCESS;
 }
 
+/* ==========================================================================
+ * 第二十部分：数据加载与保存 — 药品(Drug)
+ * Part 20: Data Load/Save — Drug
+ * ========================================================================== */
+
 DrugNode* load_drugs_list(void) {
     FILE *fp = fopen(DRUGS_FILE, "r");
     if (!fp) {
@@ -784,6 +1109,8 @@ DrugNode* load_drugs_list(void) {
         drug.is_special = parse_bool_token(&cursor);
         drug.reimbursement_ratio = parse_float_token(&cursor);
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(drug.category, tk, sizeof(drug.category) - 1); }
+        /* 如果旧数据没有 category 字段，默认设为 "西药" */
+        /* If old data has no category field, default to "西药" (Western medicine) */
         if (drug.category[0] == '\0') strcpy(drug.category, "西药");
 
         DrugNode *node = create_drug_node(&drug);
@@ -792,7 +1119,7 @@ DrugNode* load_drugs_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -801,7 +1128,7 @@ DrugNode* load_drugs_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -817,11 +1144,11 @@ int save_drugs_list(DrugNode *head) {
     while (current) {
         fprintf_escaped(fp, current->data.drug_id); fprintf(fp, "\t");
         fprintf_escaped(fp, current->data.name); fprintf(fp, "\t");
-        fprintf(fp, "%.2f\t", current->data.price);
+        fprintf(fp, "%.2f\t", current->data.price);           /* 价格保留2位小数 / Price with 2 decimal places */
         fprintf(fp, "%d\t", current->data.stock_num);
         fprintf(fp, "%d\t", current->data.warning_line);
         fprintf(fp, "%d\t", current->data.is_special ? 1 : 0);
-        fprintf(fp, "%.2f\t", current->data.reimbursement_ratio);
+        fprintf(fp, "%.2f\t", current->data.reimbursement_ratio); /* 报销比例2位小数 / Reimbursement ratio 2 decimal */
         fprintf_escaped(fp, current->data.category); fprintf(fp, "\n");
         current = current->next;
     }
@@ -829,6 +1156,11 @@ int save_drugs_list(DrugNode *head) {
     fclose(fp);
     return SUCCESS;
 }
+
+/* ==========================================================================
+ * 第二十一部分：数据加载与保存 — 病房(Ward)
+ * Part 21: Data Load/Save — Ward
+ * ========================================================================== */
 
 WardNode* load_wards_list(void) {
     FILE *fp = fopen(WARDS_FILE, "r");
@@ -856,7 +1188,7 @@ WardNode* load_wards_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -865,7 +1197,7 @@ WardNode* load_wards_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -891,6 +1223,11 @@ int save_wards_list(WardNode *head) {
     fclose(fp);
     return SUCCESS;
 }
+
+/* ==========================================================================
+ * 第二十二部分：数据加载与保存 — 预约(Appointment)
+ * Part 22: Data Load/Save — Appointment
+ * ========================================================================== */
 
 AppointmentNode* load_appointments_list(void) {
     FILE *fp = fopen(APPOINTMENTS_FILE, "r");
@@ -959,6 +1296,19 @@ int save_appointments_list(AppointmentNode *head) {
     return SUCCESS;
 }
 
+/* ==========================================================================
+ * 第二十三部分：数据加载与保存 — 现场挂号(OnsiteRegistration)队列
+ * Part 23: Data Load/Save — OnsiteRegistration Queue
+ * ==========================================================================
+ *
+ * [中文]
+ * 现场挂号以队列形式从文件加载。加载时按照文件顺序逐个入队（队尾追加），
+ * 因此文件中记录的顺序即反映原始排队顺序。
+ * [English]
+ * Onsite registrations are loaded as a queue from file. Each record is enqueued
+ * in file order (rear append), so the file order reflects the original queue order.
+ */
+
 OnsiteRegistrationQueue load_onsite_registration_queue(void) {
     FILE *fp = fopen(ONSITE_REGISTRATIONS_FILE, "r");
     OnsiteRegistrationQueue queue;
@@ -981,6 +1331,7 @@ OnsiteRegistrationQueue load_onsite_registration_queue(void) {
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.status, tk, sizeof(registration.status) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(registration.create_time, tk, sizeof(registration.create_time) - 1); }
 
+        /* 按文件顺序追加入队（队尾） / Enqueue in file order (rear append) */
         if (enqueue_onsite_registration(&queue, &registration, false) != SUCCESS) {
             free_onsite_registration_queue(&queue);
             break;
@@ -1000,6 +1351,7 @@ int save_onsite_registration_queue(const OnsiteRegistrationQueue *queue) {
     }
 
     fprintf(fp, "# onsite_id\tpatient_id\tdoctor_id\tdepartment_id\tqueue_number\tstatus\tcreate_time\n");
+    /* 从队首开始遍历，保持队列顺序 / Traverse from front to preserve queue order */
     current = queue ? queue->front : NULL;
     while (current) {
         fprintf_escaped(fp, current->data.onsite_id); fprintf(fp, "\t");
@@ -1016,6 +1368,16 @@ int save_onsite_registration_queue(const OnsiteRegistrationQueue *queue) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 获取指定医生的下一个现场排队号
+ * [English] Get the next onsite queue number for a specific doctor
+ *
+ * 算法 / Algorithm:
+ *   遍历当前所有现场挂号记录，找到同一医生的最大排队号，
+ *   返回 max + 1 作为新排队号。
+ *   Iterate all current onsite registrations, find the max queue_number
+ *   for the same doctor, return max + 1 as the new queue number.
+ */
 int get_next_onsite_queue_number(const char *doctor_id, const char *department_id) {
     OnsiteRegistrationQueue queue = load_onsite_registration_queue();
     OnsiteRegistrationNode *current = queue.front;
@@ -1033,6 +1395,11 @@ int get_next_onsite_queue_number(const char *doctor_id, const char *department_i
     free_onsite_registration_queue(&queue);
     return max_queue_number + 1;
 }
+
+/* ==========================================================================
+ * 第二十四部分：数据加载与保存 — 病房呼叫(WardCall)
+ * Part 24: Data Load/Save — WardCall
+ * ========================================================================== */
 
 WardCallNode* load_ward_calls_list(void) {
     FILE *fp = fopen(WARD_CALLS_FILE, "r");
@@ -1100,7 +1467,10 @@ int save_ward_calls_list(WardCallNode *head) {
     return SUCCESS;
 }
 
-// ==================== 排班操作函数 ====================
+/* ==========================================================================
+ * 第二十五部分：排班(Schedule)链表操作与数据加载保存
+ * Part 25: Schedule Linked List Operations & Data Load/Save
+ * ========================================================================== */
 
 ScheduleNode* create_schedule_node(const Schedule *schedule) {
     ScheduleNode *node = (ScheduleNode *)malloc(sizeof(ScheduleNode));
@@ -1148,8 +1518,8 @@ ScheduleNode* load_schedules_list(void) {
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.doctor_id, tk, sizeof(schedule.doctor_id) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.work_date, tk, sizeof(schedule.work_date) - 1); }
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.time_slot, tk, sizeof(schedule.time_slot) - 1); }
-        schedule.max_appt = parse_int_token(&cursor);
-        schedule.max_onsite = parse_int_token(&cursor);
+        schedule.max_appt = parse_int_token(&cursor);    /* 最大预约数 / Max appointments */
+        schedule.max_onsite = parse_int_token(&cursor);  /* 最大现场号 / Max onsite registrations */
         { char *tk = next_token(&cursor); unescape_field_inplace(tk); strncpy(schedule.status, tk, sizeof(schedule.status) - 1); }
 
         ScheduleNode *node = create_schedule_node(&schedule);
@@ -1194,6 +1564,13 @@ int save_schedules_list(ScheduleNode *head) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 检查指定医生在指定日期是否有正常排班
+ * [English] Check if a specified doctor has normal schedule on a given date
+ *
+ * 匹配条件 / Match conditions:
+ *   doctor_id 匹配 AND work_date 匹配 AND status == "正常"
+ */
 int has_doctor_schedule(const char *doctor_id, const char *date) {
     ScheduleNode *head = load_schedules_list();
     if (!head) return 0;
@@ -1212,6 +1589,11 @@ int has_doctor_schedule(const char *doctor_id, const char *date) {
     free_schedule_list(head);
     return 0;
 }
+
+/* ==========================================================================
+ * 第二十六部分：数据加载与保存 — 病历(MedicalRecord)
+ * Part 26: Data Load/Save — MedicalRecord
+ * ========================================================================== */
 
 MedicalRecordNode* load_medical_records_list(void) {
     FILE *fp = fopen(MEDICAL_RECORDS_FILE, "r");
@@ -1241,7 +1623,7 @@ MedicalRecordNode* load_medical_records_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -1250,7 +1632,7 @@ MedicalRecordNode* load_medical_records_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -1277,6 +1659,11 @@ int save_medical_records_list(MedicalRecordNode *head) {
     fclose(fp);
     return SUCCESS;
 }
+
+/* ==========================================================================
+ * 第二十七部分：数据加载与保存 — 处方(Prescription)
+ * Part 27: Data Load/Save — Prescription
+ * ========================================================================== */
 
 PrescriptionNode* load_prescriptions_list(void) {
     FILE *fp = fopen(PRESCRIPTIONS_FILE, "r");
@@ -1307,7 +1694,7 @@ PrescriptionNode* load_prescriptions_list(void) {
             fclose(fp);
             return NULL;
         }
-        
+
         if (!head) {
             head = node;
             tail = node;
@@ -1316,7 +1703,7 @@ PrescriptionNode* load_prescriptions_list(void) {
             tail = node;
         }
     }
-    
+
     fclose(fp);
     return head;
 }
@@ -1344,37 +1731,58 @@ int save_prescriptions_list(PrescriptionNode *head) {
     return SUCCESS;
 }
 
-// ==================== Helper Functions ====================
+/* ==========================================================================
+ * 第二十八部分：查找与查询辅助函数
+ * Part 28: Find & Query Helper Functions
+ * ==========================================================================
+ *
+ * [中文]
+ * 这些函数从文件加载数据链表，遍历查找匹配项，找到后分配新内存复制实体数据
+ * 并返回（调用者负责释放），然后释放整个链表。返回的指针是独立副本，
+ * 不受后续文件修改影响。
+ *
+ * [English]
+ * These functions load the data linked list from file, traverse to find matches,
+ * allocate new memory to copy the entity data (caller is responsible for freeing),
+ * then free the entire linked list. The returned pointer is an independent copy,
+ * unaffected by subsequent file modifications.
+ */
 
+/*
+ * [中文] 根据用户名查找患者 / [English] Find patient by username
+ */
 Patient* find_patient_by_username(const char *username) {
     PatientNode *head = load_patients_list();
     if (!head) {
         return NULL;
     }
-    
+
     PatientNode *current = head;
     while (current) {
         if (strcmp(current->data.username, username) == 0) {
             Patient *patient = (Patient *)malloc(sizeof(Patient));
             if (patient) {
-                *patient = current->data;
+                *patient = current->data;  /* 复制实体数据 / Copy entity data */
             }
             free_patient_list(head);
             return patient;
         }
         current = current->next;
     }
-    
+
     free_patient_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 根据患者ID查找患者 / [English] Find patient by patient ID
+ */
 Patient* find_patient_by_id(const char *patient_id) {
     PatientNode *head = load_patients_list();
     if (!head) {
         return NULL;
     }
-    
+
     PatientNode *current = head;
     while (current) {
         if (strcmp(current->data.patient_id, patient_id) == 0) {
@@ -1387,15 +1795,24 @@ Patient* find_patient_by_id(const char *patient_id) {
         }
         current = current->next;
     }
-    
+
     free_patient_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 确保患者档案存在 — 如果不存在则创建默认档案
+ * [English] Ensure patient profile exists — create default profile if not found
+ *
+ * 处理三种情况 / Handles three cases:
+ *   1. 患者文件为空 → 创建新患者并保存
+ *   2. 患者文件有数据但无此用户 → 追加新患者到链表尾部并保存
+ *   3. 患者文件已有此用户 → 直接返回成功，无需任何操作
+ */
 int ensure_patient_profile(const char *username) {
     PatientNode *head = load_patients_list();
     if (!head) {
-        // 创建新患者
+        /* 情况1：尚无任何患者数据 / Case 1: No patient data yet */
         Patient new_patient = {0};
         generate_id(new_patient.patient_id, MAX_ID, "P");
         strcpy(new_patient.username, username);
@@ -1404,18 +1821,18 @@ int ensure_patient_profile(const char *username) {
         strcpy(new_patient.patient_type, "普通");
         strcpy(new_patient.treatment_stage, "初诊");
         new_patient.is_emergency = false;
-        
+
         PatientNode *node = create_patient_node(&new_patient);
         if (!node) {
             return ERROR_FILE_IO;
         }
-        
+
         int result = save_patients_list(node);
         free_patient_list(node);
         return result;
     }
-    
-    // 检查是否已存在
+
+    /* 情况3：查找是否已存在该用户 / Case 3: Check if user already exists */
     PatientNode *current = head;
     while (current) {
         if (strcmp(current->data.username, username) == 0) {
@@ -1424,8 +1841,8 @@ int ensure_patient_profile(const char *username) {
         }
         current = current->next;
     }
-    
-    // 添加新患者
+
+    /* 情况2：不存在，追加新患者 / Case 2: Not found, append new patient */
     Patient new_patient = {0};
     generate_id(new_patient.patient_id, MAX_ID, "P");
     strcpy(new_patient.username, username);
@@ -1434,31 +1851,34 @@ int ensure_patient_profile(const char *username) {
     strcpy(new_patient.patient_type, "普通");
     strcpy(new_patient.treatment_stage, "初诊");
     new_patient.is_emergency = false;
-    
+
     PatientNode *node = create_patient_node(&new_patient);
     if (!node) {
         free_patient_list(head);
         return ERROR_FILE_IO;
     }
-    
-    // 找到链表尾部
+
+    /* 找到链表尾部，追加新节点 / Find tail of linked list, append new node */
     PatientNode *tail = head;
     while (tail->next) {
         tail = tail->next;
     }
     tail->next = node;
-    
+
     int result = save_patients_list(head);
     free_patient_list(head);
     return result;
 }
 
+/*
+ * [中文] 根据用户名查找医生 / [English] Find doctor by username
+ */
 Doctor* find_doctor_by_username(const char *username) {
     DoctorNode *head = load_doctors_list();
     if (!head) {
         return NULL;
     }
-    
+
     DoctorNode *current = head;
     while (current) {
         if (strcmp(current->data.username, username) == 0) {
@@ -1471,17 +1891,20 @@ Doctor* find_doctor_by_username(const char *username) {
         }
         current = current->next;
     }
-    
+
     free_doctor_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 根据医生ID查找医生 / [English] Find doctor by doctor ID
+ */
 Doctor* find_doctor_by_id(const char *doctor_id) {
     DoctorNode *head = load_doctors_list();
     if (!head) {
         return NULL;
     }
-    
+
     DoctorNode *current = head;
     while (current) {
         if (strcmp(current->data.doctor_id, doctor_id) == 0) {
@@ -1494,37 +1917,64 @@ Doctor* find_doctor_by_id(const char *doctor_id) {
         }
         current = current->next;
     }
-    
+
     free_doctor_list(head);
     return NULL;
 }
 
+/* ==========================================================================
+ * 第二十九部分：医生 ID 生成 —— 科室字母前缀 + 4位序号
+ * Part 29: Doctor ID Generation — Department Letter Prefix + 4-Digit Sequence
+ * ==========================================================================
+ *
+ * [中文]
+ * 医生 ID 格式：一个字母 + 4位数字（如 A0001, B0003, X0001）
+ *
+ * 生成算法 / Generation algorithm:
+ *   1. 根据 department_id 在科室列表中查找对应科室
+ *   2. 科室在列表中的索引决定字母：第0个→A，第1个→B，...，最多到Z（25）
+ *   3. 查找所有已存在的医生，统计同字母前缀的最大序号
+ *   4. 新 ID = 字母 + (max_seq + 1) 格式化为4位零填充
+ *   5. 如果 department_id 无效或科室不在列表中，默认使用字母 'X'
+ *
+ * [English]
+ * Doctor ID format: one letter + 4 digits (e.g., A0001, B0003, X0001)
+ *
+ * Generation algorithm:
+ *   1. Find the department matching department_id in the department list
+ *   2. Department index in list determines the letter: 0→A, 1→B, ..., max Z (25)
+ *   3. Scan all existing doctors, find max sequence number with the same letter prefix
+ *   4. New ID = letter + (max_seq + 1) formatted as 4-digit zero-padded
+ *   5. If department_id is invalid or department not in list, default to letter 'X'
+ */
 void generate_doctor_id(const char *department_id, char *out_buf, int buf_size) {
-    char dept_letter = 'X';
+    char dept_letter = 'X';  /* 默认字母 / Default letter */
     int max_seq = 0;
 
+    /* 步骤1-2：根据科室确定字母前缀 / Steps 1-2: Determine letter prefix from department */
     if (department_id && department_id[0] != '\0') {
         DepartmentNode *dept_head = load_departments_list();
         DepartmentNode *dc = dept_head;
         int letter_idx = 0;
         while (dc) {
             if (strcmp(dc->data.department_id, department_id) == 0) {
-                dept_letter = (char)('A' + letter_idx);
+                dept_letter = (char)('A' + letter_idx);  /* 索引映射为字母 / Map index to letter */
                 break;
             }
             letter_idx++;
-            if (letter_idx > 25) letter_idx = 25;
+            if (letter_idx > 25) letter_idx = 25;  /* 最多 Z / Cap at Z */
             dc = dc->next;
         }
         free_department_list(dept_head);
     }
 
+    /* 步骤3：查找同字母前缀的最大序号 / Step 3: Find max sequence with same letter prefix */
     {
         DoctorNode *dh = load_doctors_list();
         DoctorNode *dcur = dh;
         while (dcur) {
             if (dcur->data.doctor_id[0] == dept_letter) {
-                int seq = (int)strtol(dcur->data.doctor_id + 1, NULL, 10);
+                int seq = (int)strtol(dcur->data.doctor_id + 1, NULL, 10);  /* 跳过首字母解析数字 / Skip first letter, parse digits */
                 if (seq > max_seq) max_seq = seq;
             }
             dcur = dcur->next;
@@ -1532,22 +1982,77 @@ void generate_doctor_id(const char *department_id, char *out_buf, int buf_size) 
         free_doctor_list(dh);
     }
 
+    /* 步骤4：格式化为 X0001 格式 / Step 4: Format as X0001 */
     snprintf(out_buf, buf_size, "%c%04d", dept_letter, max_seq + 1);
 }
 
+/* ==========================================================================
+ * 第三十部分：医生 ID 迁移 — 旧版长 ID 转换为新版短格式
+ * Part 30: Doctor ID Migration — Convert Old Long IDs to New Short Format
+ * ==========================================================================
+ *
+ * [中文]
+ * ID 迁移算法 / ID Migration Algorithm:
+ *
+ * 背景：
+ *   旧版系统中医生 ID 可能是任意长度的字符串。新版统一使用 "字母+4位数字"
+ *   格式（如 A0001）。此函数将旧版长 ID 转换为新版短格式，并同步更新所有
+ *   引用该医生 ID 的其他数据文件。
+ *
+ * 步骤概览 / Step overview:
+ *   1. 遍历所有医生，找出 ID 长度 > 5 的（即旧版长 ID）
+ *   2. 对每个需要迁移的医生：
+ *      a. 根据其所属科室确定字母前缀（同 generate_doctor_id 逻辑）
+ *      b. 查找同字母前缀的最大序号，生成新 ID
+ *      c. 将 (旧ID → 新ID) 映射关系存入 old_to_new 表
+ *      d. 更新医生自身的 doctor_id
+ *   3. 保存更新后的医生列表
+ *   4. 遍历所有关联文件（预约、现场挂号、病历、处方），查找引用旧 ID 的
+ *      记录，替换为新 ID，然后保存。
+ *
+ * 关联文件 / Cross-referenced files updated:
+ *   - appointments.txt（预约）
+ *   - onsite_registrations.txt（现场挂号）
+ *   - medical_records.txt（病历）
+ *   - prescriptions.txt（处方）
+ *
+ * [English]
+ * ID Migration Algorithm:
+ *
+ * Background:
+ *   Old system may have doctor IDs of arbitrary length. New system uniformly uses
+ *   "letter + 4-digit" format (e.g., A0001). This function converts old long IDs
+ *   to new short format and updates all cross-referenced data files.
+ *
+ * Step overview:
+ *   1. Iterate all doctors, identify those with ID length > 5 (old long IDs)
+ *   2. For each doctor needing migration:
+ *      a. Determine letter prefix from their department (same logic as generate_doctor_id)
+ *      b. Find max sequence with same letter prefix, generate new ID
+ *      c. Store (old ID → new ID) mapping in old_to_new table
+ *      d. Update the doctor's own doctor_id
+ *   3. Save the updated doctor list
+ *   4. Iterate all cross-referenced files (appointments, onsite registrations,
+ *      medical records, prescriptions), find records referencing old IDs,
+ *      replace with new IDs, and save.
+ */
 void migrate_doctor_ids(void) {
     DoctorNode *dh = load_doctors_list();
     DoctorNode *doc = dh;
     int changed = 0;
+    /* 旧→新 ID 映射表，最多500条 / Old→New ID mapping table, max 500 entries */
     char old_to_new[500][2][MAX_ID];
     int map_count = 0;
 
     if (!dh) return;
 
+    /* 步骤1-2：遍历医生，迁移长 ID / Steps 1-2: Iterate doctors, migrate long IDs */
     while (doc) {
         int id_len = (int)strlen(doc->data.doctor_id);
-        if (id_len > 5) {
+        if (id_len > 5) {  /* 旧版长 ID 判断 / Old long ID detection */
             char new_id[MAX_ID];
+
+            /* 步骤2a：确定字母前缀 / Step 2a: Determine letter prefix */
             DoctorNode *dh2 = load_doctors_list();
             DoctorNode *tmp = dh2;
             int dept_idx = 0;
@@ -1563,12 +2068,13 @@ void migrate_doctor_ids(void) {
                 free_department_list(dept_head);
             }
 
+            /* 步骤2b：查找最大序号 / Step 2b: Find max sequence number */
             char letter = doc->data.department_id[0] ? (char)('A' + dept_idx) : 'X';
             int max_s = 0;
             while (tmp) {
                 if (strcmp(tmp->data.doctor_id, doc->data.doctor_id) == 0) {
                     tmp = tmp->next;
-                    continue;
+                    continue;  /* 跳过自身 / Skip self */
                 }
                 if (tmp->data.doctor_id[0] == letter) {
                     int s = (int)strtol(tmp->data.doctor_id + 1, NULL, 10);
@@ -1580,12 +2086,14 @@ void migrate_doctor_ids(void) {
 
             snprintf(new_id, sizeof(new_id), "%c%04d", letter, max_s + 1);
 
+            /* 步骤2c：记录映射关系 / Step 2c: Record mapping */
             if (map_count < 200) {
                 strcpy(old_to_new[map_count][0], doc->data.doctor_id);
                 strcpy(old_to_new[map_count][1], new_id);
                 map_count++;
             }
 
+            /* 步骤2d：更新医生自身 ID / Step 2d: Update doctor's own ID */
             strcpy(doc->data.doctor_id, new_id);
             changed = 1;
         }
@@ -1593,8 +2101,10 @@ void migrate_doctor_ids(void) {
     }
 
     if (changed) {
+        /* 步骤3：保存医生列表 / Step 3: Save doctor list */
         save_doctors_list(dh);
 
+        /* 步骤4a：更新预约文件中的医生 ID 引用 / Step 4a: Update doctor ID refs in appointments */
         {
             AppointmentNode *ah = load_appointments_list();
             AppointmentNode *ac = ah;
@@ -1612,6 +2122,7 @@ void migrate_doctor_ids(void) {
             free_appointment_list(ah);
         }
 
+        /* 步骤4b：更新现场挂号文件中的医生 ID 引用 / Step 4b: Update doctor ID refs in onsite registrations */
         {
             OnsiteRegistrationQueue oq = load_onsite_registration_queue();
             OnsiteRegistrationNode *oc = oq.front;
@@ -1629,6 +2140,7 @@ void migrate_doctor_ids(void) {
             free_onsite_registration_queue(&oq);
         }
 
+        /* 步骤4c：更新病历文件中的医生 ID 引用 / Step 4c: Update doctor ID refs in medical records */
         {
             MedicalRecordNode *mh = load_medical_records_list();
             MedicalRecordNode *mc = mh;
@@ -1646,6 +2158,7 @@ void migrate_doctor_ids(void) {
             free_medical_record_list(mh);
         }
 
+        /* 步骤4d：更新处方文件中的医生 ID 引用 / Step 4d: Update doctor ID refs in prescriptions */
         {
             PrescriptionNode *ph = load_prescriptions_list();
             PrescriptionNode *pc = ph;
@@ -1667,6 +2180,18 @@ void migrate_doctor_ids(void) {
     free_doctor_list(dh);
 }
 
+/*
+ * [中文] 跨文件更新医生 ID — 当医生更换科室时，更新所有关联文件中的引用
+ * [English] Update doctor ID across files — when a doctor changes department,
+ *          update references in all related files
+ *
+ * 与 migrate_doctor_ids 的区别 / Difference from migrate_doctor_ids:
+ *   - migrate_doctor_ids: 批量迁移所有旧版长 ID
+ *   - update_doctor_id_across_files: 单个医生的 ID 变更（如科室变动导致 ID 变化）
+ *
+ * 更新的文件 / Files updated:
+ *   - appointments.txt, onsite_registrations.txt, medical_records.txt, prescriptions.txt
+ */
 void update_doctor_id_across_files(const char *old_id, const char *new_id) {
     {
         AppointmentNode *ah = load_appointments_list();
@@ -1714,26 +2239,31 @@ void update_doctor_id_across_files(const char *old_id, const char *new_id) {
     }
 }
 
+/*
+ * [中文] 确保医生档案存在 — 如果不存在则创建默认档案
+ * [English] Ensure doctor profile exists — create default profile if not found
+ */
 int ensure_doctor_profile(const char *username) {
     DoctorNode *head = load_doctors_list();
     if (!head) {
+        /* 尚无任何医生数据 / No doctor data yet */
         Doctor new_doctor = {0};
-        generate_doctor_id("", new_doctor.doctor_id, MAX_ID);
+        generate_doctor_id("", new_doctor.doctor_id, MAX_ID);  /* 无科室 → 默认 X 开头 / No dept → defaults to X prefix */
         strcpy(new_doctor.username, username);
         strcpy(new_doctor.name, username);
         strcpy(new_doctor.title, "医生");
-        
+
         DoctorNode *node = create_doctor_node(&new_doctor);
         if (!node) {
             return ERROR_FILE_IO;
         }
-        
+
         int result = save_doctors_list(node);
         free_doctor_list(node);
         return result;
     }
-    
-    // 检查是否已存在
+
+    /* 检查是否已存在 / Check if already exists */
     DoctorNode *current = head;
     while (current) {
         if (strcmp(current->data.username, username) == 0) {
@@ -1742,36 +2272,45 @@ int ensure_doctor_profile(const char *username) {
         }
         current = current->next;
     }
-    
-    // 添加新医生
+
+    /* 追加新医生 / Append new doctor */
     Doctor new_doctor = {0};
     generate_doctor_id("", new_doctor.doctor_id, MAX_ID);
     strcpy(new_doctor.username, username);
     strcpy(new_doctor.name, username);
     strcpy(new_doctor.title, "医生");
-    
+
     DoctorNode *node = create_doctor_node(&new_doctor);
     if (!node) {
         free_doctor_list(head);
         return ERROR_FILE_IO;
     }
-    
-    // 找到链表尾部
+
+    /* 找到链表尾部，追加 / Find tail, append */
     DoctorNode *tail = head;
     while (tail->next) {
         tail = tail->next;
     }
     tail->next = node;
-    
+
     int result = save_doctors_list(head);
     free_doctor_list(head);
     return result;
 }
 
+/*
+ * [中文] 创建带详细信息的医生档案（用户名、姓名、职称、科室）
+ * [English] Create doctor profile with detailed info (username, name, title, department)
+ *
+ * 与 ensure_doctor_profile 的区别 / Difference from ensure_doctor_profile:
+ *   此函数允许在创建时指定完整的医生信息（姓名、职称、科室），
+ *   而 ensure_doctor_profile 只使用默认值。
+ */
 int create_doctor_profile_with_details(const char *username, const char *name, const char *title, const char *department_id) {
     DoctorNode *head = load_doctors_list();
     DoctorNode *current = head;
 
+    /* 如果已存在则直接返回 / Return if already exists */
     while (current) {
         if (strcmp(current->data.username, username) == 0) {
             free_doctor_list(head);
@@ -1780,8 +2319,9 @@ int create_doctor_profile_with_details(const char *username, const char *name, c
         current = current->next;
     }
 
+    /* 创建新医生 / Create new doctor */
     Doctor new_doctor = {0};
-    generate_doctor_id(department_id, new_doctor.doctor_id, MAX_ID);
+    generate_doctor_id(department_id, new_doctor.doctor_id, MAX_ID);  /* 基于科室生成 ID / Generate ID based on department */
     strcpy(new_doctor.username, username);
     strcpy(new_doctor.name, name);
     strcpy(new_doctor.title, title);
@@ -1801,6 +2341,7 @@ int create_doctor_profile_with_details(const char *username, const char *name, c
         return result;
     }
 
+    /* 追加到链表尾部 / Append to tail of list */
     DoctorNode *tail = head;
     while (tail->next) {
         tail = tail->next;
@@ -1812,12 +2353,15 @@ int create_doctor_profile_with_details(const char *username, const char *name, c
     return result;
 }
 
+/*
+ * [中文] 根据药品ID查找药品 / [English] Find drug by drug ID
+ */
 Drug* find_drug_by_id(const char *drug_id) {
     DrugNode *head = load_drugs_list();
     if (!head) {
         return NULL;
     }
-    
+
     DrugNode *current = head;
     while (current) {
         if (strcmp(current->data.drug_id, drug_id) == 0) {
@@ -1830,17 +2374,21 @@ Drug* find_drug_by_id(const char *drug_id) {
         }
         current = current->next;
     }
-    
+
     free_drug_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 根据患者ID查找预约（返回第一个匹配项）
+ * [English] Find appointment by patient ID (returns first match)
+ */
 Appointment* find_appointments_by_patient(const char *patient_id) {
     AppointmentNode *head = load_appointments_list();
     if (!head) {
         return NULL;
     }
-    
+
     AppointmentNode *current = head;
     while (current) {
         if (strcmp(current->data.patient_id, patient_id) == 0) {
@@ -1853,17 +2401,21 @@ Appointment* find_appointments_by_patient(const char *patient_id) {
         }
         current = current->next;
     }
-    
+
     free_appointment_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 根据医生ID查找预约（返回第一个匹配项）
+ * [English] Find appointment by doctor ID (returns first match)
+ */
 Appointment* find_appointments_by_doctor(const char *doctor_id) {
     AppointmentNode *head = load_appointments_list();
     if (!head) {
         return NULL;
     }
-    
+
     AppointmentNode *current = head;
     while (current) {
         if (strcmp(current->data.doctor_id, doctor_id) == 0) {
@@ -1876,17 +2428,21 @@ Appointment* find_appointments_by_doctor(const char *doctor_id) {
         }
         current = current->next;
     }
-    
+
     free_appointment_list(head);
     return NULL;
 }
 
+/*
+ * [中文] 根据患者ID查找病历（返回第一个匹配项）
+ * [English] Find medical record by patient ID (returns first match)
+ */
 MedicalRecord* find_records_by_patient(const char *patient_id) {
     MedicalRecordNode *head = load_medical_records_list();
     if (!head) {
         return NULL;
     }
-    
+
     MedicalRecordNode *current = head;
     while (current) {
         if (strcmp(current->data.patient_id, patient_id) == 0) {
@@ -1899,10 +2455,27 @@ MedicalRecord* find_records_by_patient(const char *patient_id) {
         }
         current = current->next;
     }
-    
+
     free_medical_record_list(head);
     return NULL;
 }
+
+/* ==========================================================================
+ * 第三十一部分：医疗模板(Template)操作 — 创建/释放/加载/保存/默认初始化
+ * Part 31: Medical Template Operations — Create/Free/Load/Save/Default Init
+ * ==========================================================================
+ *
+ * [中文]
+ * 医疗模板用于快速填充诊断、治疗方案、检查项目等。系统预置18个默认模板，
+ * 覆盖6种常见疾病（上呼吸道感染、急性胃肠炎、高血压、糖尿病、肺炎、皮炎），
+ * 每种疾病包含诊断、治疗、检查三类模板。
+ *
+ * [English]
+ * Medical templates are used for quick-filling diagnosis, treatment plans,
+ * exam items, etc. The system preloads 18 default templates covering 6 common
+ * conditions (URI, acute gastroenteritis, hypertension, diabetes, pneumonia,
+ * dermatitis), each with diagnosis, treatment, and exam templates.
+ */
 
 TemplateNode* create_template_node(const MedicalTemplate *tmpl) {
     TemplateNode *node = (TemplateNode *)malloc(sizeof(TemplateNode));
@@ -1960,9 +2533,21 @@ int save_templates_list(TemplateNode *head) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 初始化默认模板 — 仅当模板文件为空时写入18个预置模板
+ * [English] Initialize default templates — write 18 preset templates only if file is empty
+ *
+ * 模板编号 / Template IDs:
+ *   T001-T003: 上呼吸道感染（诊断、治疗、检查） / URI (diagnosis, treatment, exam)
+ *   T004-T006: 急性胃肠炎 / Acute gastroenteritis
+ *   T007-T009: 高血压 / Hypertension
+ *   T010-T012: 糖尿病 / Diabetes
+ *   T013-T015: 肺炎 / Pneumonia
+ *   T016-T018: 皮炎 / Dermatitis
+ */
 int ensure_default_templates(void) {
     TemplateNode *existing = load_templates_list();
-    if (existing) { free_template_list(existing); return SUCCESS; }
+    if (existing) { free_template_list(existing); return SUCCESS; }  /* 已有模板，跳过 / Already have templates, skip */
 
     MedicalTemplate defaults[] = {
         {"T001", "诊断", "上呼吸道感染", "急性上呼吸道感染，伴发热、咳嗽、咽痛"},
@@ -1998,7 +2583,21 @@ int ensure_default_templates(void) {
     return result;
 }
 
-// ======================= 操作日志 =======================
+/* ==========================================================================
+ * 第三十二部分：操作日志(LogEntry) — 追加式操作记录
+ * Part 32: Operation Log (LogEntry) — Append-Only Operation Recording
+ * ==========================================================================
+ *
+ * [中文]
+ * 操作日志用于记录所有增删改操作，采用追加写入模式（fopen(..., "a")）。
+ * 每条日志包含：操作人、操作类型、操作目标、目标ID、详情、时间戳。
+ * 日志文件首次写入时自动添加列标题行。
+ *
+ * [English]
+ * Operation log records all CRUD operations using append mode (fopen(..., "a")).
+ * Each log entry contains: operator, action, target, target ID, detail, timestamp.
+ * The column header line is automatically added on first write.
+ */
 
 LogEntryNode* create_log_entry_node(const LogEntry *entry) {
     LogEntryNode *node = malloc(sizeof(LogEntryNode));
@@ -2050,19 +2649,29 @@ LogEntryNode* load_logs_list(void) {
     return head;
 }
 
+/*
+ * [中文] 追加一条操作日志到日志文件
+ * [English] Append one operation log entry to the log file
+ *
+ * 实现说明 / Implementation notes:
+ *   - 以追加模式 "a" 打开文件（不清除已有内容） / Open in append mode "a" (preserves existing content)
+ *   - fseek + ftell 检查文件是否为空，空文件则写入列标题 / Check if file is empty via fseek+ftell, write header if so
+ *   - 自动生成日志 ID（L 前缀）和当前时间戳 / Auto-generate log ID (L prefix) and current timestamp
+ */
 int append_log(const char *operator_name, const char *action, const char *target,
                const char *target_id, const char *detail) {
     FILE *fp = fopen(LOGS_FILE, "a");
     if (!fp) return ERROR_FILE_IO;
 
-    // If first time, write header
+    /* 如果文件为空（首次写入），先写列标题行 */
+    /* If file is empty (first write), write column header line first */
     fseek(fp, 0, SEEK_END);
     if (ftell(fp) == 0) {
         fprintf(fp, "# log_id\toperator\taction\ttarget\ttarget_id\tdetail\tcreate_time\n");
     }
 
     char log_id[MAX_ID];
-    generate_id(log_id, MAX_ID, "L");
+    generate_id(log_id, MAX_ID, "L");  /* 日志ID以L开头 / Log ID prefixed with L */
     char create_time[30];
     get_current_time(create_time, sizeof(create_time));
 
@@ -2077,8 +2686,45 @@ int append_log(const char *operator_name, const char *action, const char *target
     return SUCCESS;
 }
 
-// ======================= 数据备份与恢复 =======================
+/* ==========================================================================
+ * 第三十三部分：数据备份与恢复
+ * Part 33: Data Backup and Restore
+ * ==========================================================================
+ *
+ * [中文]
+ * 备份机制 / Backup Mechanism:
+ *
+ *   1. 备份时创建一个以时间戳命名的子目录（格式：YYYYMMDD_HHMMSS）
+ *     位于 data/backup/ 下
+ *   2. 将所有14个数据文件逐一复制到备份目录
+ *   3. 备份完成后自动检查备份数量；如果超过 MAX_BACKUPS(20) 个，
+ *      删除最旧的备份目录（按名称字典序最小）
+ *
+ *   还原机制 / Restore Mechanism:
+ *   1. 指定备份目录名，将目录中的所有文件逐一复制回 data/ 目录
+ *   2. 覆盖当前数据文件
+ *
+ *   文件列表 / File list (14 files):
+ *     users.txt, patients.txt, doctors.txt, departments.txt,
+ *     drugs.txt, wards.txt, appointments.txt, onsite_registrations.txt,
+ *     ward_calls.txt, medical_records.txt, prescriptions.txt,
+ *     templates.txt, schedules.txt, logs.txt
+ *
+ * [English]
+ * Backup Mechanism:
+ *
+ *   1. Creates a timestamped subdirectory (format: YYYYMMDD_HHMMSS)
+ *      under data/backup/
+ *   2. Copies all 14 data files one by one into the backup directory
+ *   3. After backup, checks backup count; if exceeding MAX_BACKUPS(20),
+ *      deletes the oldest backup directory (smallest lexicographic name)
+ *
+ * Restore Mechanism:
+ *   1. Given a backup directory name, copies all files back to data/ directory
+ *   2. Overwrites current data files
+ */
 
+/* 需要备份的所有数据文件名列表 / List of all data file names to back up */
 static const char *backup_data_files[] = {
     "users.txt", "patients.txt", "doctors.txt", "departments.txt",
     "drugs.txt", "wards.txt", "appointments.txt", "onsite_registrations.txt",
@@ -2086,8 +2732,21 @@ static const char *backup_data_files[] = {
     "templates.txt", "schedules.txt", "logs.txt"
 };
 static const int backup_file_count = sizeof(backup_data_files) / sizeof(backup_data_files[0]);
-#define MAX_BACKUPS 20
+#define MAX_BACKUPS 20  /* 最大备份保留数 / Maximum number of backups to retain */
 
+/*
+ * [中文] 清理最旧的备份 — 当备份数量超过 MAX_BACKUPS 时删除最旧的
+ * [English] Remove oldest backup — when backup count exceeds MAX_BACKUPS
+ *
+ * 算法 / Algorithm:
+ *   1. 遍历 data/backup/ 下的所有子目录
+ *   2. 统计子目录数量
+ *   3. 记录名称字典序最小的目录（即时间戳最早，因为命名格式是 YYYYMMDD_HHMMSS）
+ *   4. 如果 count > MAX_BACKUPS，删除最旧备份目录中的所有文件，然后删除目录
+ *
+ * 注意：Windows 和 Unix 实现分开；Windows 使用 _findfirst/_findnext，
+ *       Unix 使用 opendir/readdir（此处为简化版本）。
+ */
 #ifdef _WIN32
 #include <io.h>
 static void remove_oldest_backup(void) {
@@ -2097,20 +2756,24 @@ static void remove_oldest_backup(void) {
 
     char oldest[64] = "";
     int count = 0;
+    /* 遍历备份目录，统计数量并找到最旧的 / Iterate backups, count and find oldest */
     do {
         if (fd.attrib & _A_SUBDIR) {
             if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
             count++;
+            /* 字典序最小 = 时间戳最早 / Lexicographically smallest = earliest timestamp */
             if (oldest[0] == '\0' || strcmp(fd.name, oldest) < 0)
                 strncpy(oldest, fd.name, sizeof(oldest) - 1);
         }
     } while (_findnext(handle, &fd) == 0);
     _findclose(handle);
 
+    /* 超过上限，删除最旧的 / Exceeded limit, remove oldest */
     if (count > MAX_BACKUPS && oldest[0]) {
         char path[256];
         snprintf(path, sizeof(path), DATA_DIR "/backup/%s", oldest);
-        // Remove all files in the backup directory first
+
+        /* 先删除备份目录内的所有文件 / First delete all files in the backup directory */
         char search[256];
         snprintf(search, sizeof(search), "%s/*", path);
         struct _finddata_t ffd;
@@ -2125,17 +2788,24 @@ static void remove_oldest_backup(void) {
             } while (_findnext(fh, &ffd) == 0);
             _findclose(fh);
         }
-        _rmdir(path);
+        _rmdir(path);  /* 删除空目录 / Remove the empty directory */
         printf("  ⚠ 已清理最旧备份: %s (超过 %d 个限制)\n", oldest, MAX_BACKUPS);
     }
 }
 #else
 static void remove_oldest_backup(void) {
-    // Unix version - simplified
+    /* Unix 版本 — 简化实现 / Unix version — simplified implementation */
     (void)0;
 }
 #endif
 
+/*
+ * [中文] 二进制文件复制 — 逐块读取源文件写入目标文件
+ * [English] Binary file copy — read source in chunks and write to destination
+ *
+ * 使用 4096 字节缓冲区逐块复制，适用于任意大小的文件。
+ * Uses a 4096-byte buffer for chunked copying, works for files of any size.
+ */
 static int copy_file(const char *src, const char *dst) {
     FILE *fs = fopen(src, "rb");
     if (!fs) return ERROR_FILE_IO;
@@ -2151,14 +2821,26 @@ static int copy_file(const char *src, const char *dst) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 执行数据备份
+ * [English] Perform data backup
+ *
+ * 完整流程 / Full workflow:
+ *   1. 确保 data/backup/ 目录存在
+ *   2. 创建以当前时间戳命名的子目录（如 data/backup/20260505_143020/）
+ *   3. 逐一复制14个数据文件到备份目录
+ *   4. 打印备份结果（成功文件数 / 总文件数）
+ *   5. 如果备份了至少1个文件，触发最旧备份清理
+ */
 int backup_data(void) {
-    // Create backup directory
+    /* 步骤1：确保备份根目录存在 / Step 1: Ensure backup root directory exists */
 #ifdef _WIN32
     _mkdir(DATA_DIR "/backup");
 #else
     mkdir(DATA_DIR "/backup", 0755);
 #endif
 
+    /* 步骤2：创建时间戳子目录 / Step 2: Create timestamped subdirectory */
     char dir_name[64];
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
@@ -2170,6 +2852,7 @@ int backup_data(void) {
     if (mkdir(dir_name, 0755) != 0) return ERROR_FILE_IO;
 #endif
 
+    /* 步骤3：逐一复制数据文件 / Step 3: Copy data files one by one */
     int success_count = 0;
     for (int i = 0; i < backup_file_count; i++) {
         char src[256], dst[256];
@@ -2180,6 +2863,7 @@ int backup_data(void) {
 
     printf("备份完成: %s (%d/%d 文件)\n", dir_name, success_count, backup_file_count);
 
+    /* 步骤5：清理超量备份 / Step 5: Cleanup excess backups */
     if (success_count > 0) {
         remove_oldest_backup();
     }
@@ -2187,6 +2871,18 @@ int backup_data(void) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 列出所有备份目录名
+ * [English] List all backup directory names
+ *
+ * 返回值通过 out_names（字符串数组）和 out_count（数量）返回。
+ * 调用者使用完毕后必须调用 free_backups_list 释放内存。
+ *
+ * Results returned via out_names (string array) and out_count (count).
+ * Caller must call free_backups_list to free the memory after use.
+ *
+ * 使用动态扩容策略：初始容量16，满时翻倍 / Uses dynamic growth: initial capacity 16, doubles when full.
+ */
 int list_backups(const char ***out_names, int *out_count) {
     *out_names = NULL;
     *out_count = 0;
@@ -2201,8 +2897,9 @@ int list_backups(const char ***out_names, int *out_count) {
     do {
         if (fd.attrib & _A_SUBDIR) {
             if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
+            /* 动态扩容 / Dynamic resizing */
             if (count >= capacity) {
-                capacity = capacity ? capacity * 2 : 16;
+                capacity = capacity ? capacity * 2 : 16;  /* 初始16，之后翻倍 / Start with 16, double thereafter */
                 char **tmp = realloc(names, capacity * sizeof(char *));
                 if (!tmp) { free_backups_list((const char **)names, count); _findclose(handle); return ERROR_FILE_IO; }
                 names = tmp;
@@ -2221,6 +2918,10 @@ int list_backups(const char ***out_names, int *out_count) {
     return SUCCESS;
 }
 
+/*
+ * [中文] 释放备份列表内存
+ * [English] Free backup list memory
+ */
 void free_backups_list(const char **names, int count) {
     if (!names) return;
     for (int i = 0; i < count; i++) {
@@ -2229,6 +2930,16 @@ void free_backups_list(const char **names, int count) {
     free(names);
 }
 
+/*
+ * [中文] 从指定备份还原数据
+ * [English] Restore data from a specified backup
+ *
+ * 将所有14个数据文件从备份目录复制回 data/ 目录，覆盖当前文件。
+ * 打印还原结果（成功文件数 / 总文件数）。
+ *
+ * Copies all 14 data files from the backup directory back to data/,
+ * overwriting current files. Prints restore results (successful / total).
+ */
 int restore_data(const char *backup_dir) {
     int success_count = 0;
 
@@ -2242,4 +2953,3 @@ int restore_data(const char *backup_dir) {
     printf("还原完成: %s (%d/%d 文件)\n", backup_dir, success_count, backup_file_count);
     return SUCCESS;
 }
-
