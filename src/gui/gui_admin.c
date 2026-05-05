@@ -1,3 +1,27 @@
+/*
+ * gui_admin.c — Win32 GUI 管理员界面实现 / Win32 GUI admin page implementation
+ *
+ * 实现管理员角色的所有 GUI 页面 (10 个页面):
+ *   - 科室管理 (CreateDeptPage) — 科室 CRUD (新增/编辑/删除)
+ *   - 医生管理 (CreateDoctorMgmtPage) — 医生 CRUD, 含繁忙度字段
+ *   - 患者管理 (CreatePatientMgmtPage) — 患者 CRUD + 刷新
+ *   - 药品管理 (CreateDrugPage) — 药品 CRUD + 补货
+ *   - 病房管理 (CreateWardPage) — 病房 CRUD (类型/总床位/剩余/预警)
+ *   - 排班管理 (CreateSchedulePage) — 生成排班 + 停诊
+ *   - 操作日志 (CreateLogPage) — 审计日志列表 (只读)
+ *   - 数据管理 (CreateDataPage) — 数据备份/恢复 + 备份列表
+ *   - 报表统计 (CreateAnalysisPage) — TabControl 三页: 概览/医生负载/财务统计
+ *   - 重置密码 (CreateResetPwdPage) — 用户列表→选中→SHA-256 重置密码
+ *
+ * 所有 CRUD 页面共享 AdminPageWndProc, 通过 GWLP_USERDATA 存储 viewId 路由。
+ * 通用 FieldDlgProc 模态对话框支持最多 16 字段的动态表单。
+ * 数据填充函数 (PopulateXxxList) 统一从文件加载 → 填充 ListView → 释放链表。
+ *
+ * Implements all 10 admin-role GUI pages with generic CRUD via FieldDlgProc,
+ * backup/restore with auto-cleanup (max 10 backups), TabControl-based
+ * analysis dashboard, and SHA-256 password reset with audit logging.
+ */
+
 #include "gui_admin.h"
 #include "gui_main.h"
 #include "../data_storage.h"
@@ -6,7 +30,7 @@
 #include <stdio.h>
 #include "../sha256.h"
 
-/* ─── ListView 工具 ─────────────────────────────────────────────────── */
+/* ─── ListView 工具 / ListView Utilities ──────────────────────────────── */
 
 static HWND CreateListView(HWND hParent, int id, int x, int y, int w, int h) {
     HWND hLV = CreateWindowA(WC_LISTVIEWA, "",
@@ -43,7 +67,8 @@ static void ClearLV(HWND hLV) {
     ListView_DeleteAllItems(hLV);
 }
 
-/* 获取选中的 ListView 首列表格文本 */
+/* 获取选中的 ListView 指定列文本 (无选中时返回空串)
+   Get text from selected ListView row at column, or empty if none selected */
 static void GetSelectedItemText(HWND hLV, int col, char *buf, int size) {
     int sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
     if (sel >= 0) {
@@ -53,7 +78,10 @@ static void GetSelectedItemText(HWND hLV, int col, char *buf, int size) {
     }
 }
 
-/* ─── 字体 ─────────────────────────────────────────────────────────── */
+/* ─── 字体管理 / Font Management ─────────────────────────────────────── */
+
+/* GetAdminFont — 创建/缓存 Microsoft YaHei 14pt 字体 (单例)
+   Create/cache a Microsoft YaHei 14pt font (singleton pattern) */
 
 static HFONT g_hAdminFont = NULL;
 
@@ -66,6 +94,7 @@ static HFONT GetAdminFont(void) {
     return g_hAdminFont;
 }
 
+/* EnumChildWindows 回调: 为每个子控件设置字体 / Callback to set font on each child */
 static BOOL CALLBACK SetChildFontEnum(HWND hChild, LPARAM lParam) {
     SendMessage(hChild, WM_SETFONT, lParam, TRUE);
     return TRUE;
@@ -79,7 +108,11 @@ static void ApplyDefaultFont(HWND hWnd) {
     }
 }
 
-/* ─── 字段编辑对话框 ───────────────────────────────────────────────── */
+/* ─── 字段编辑对话框 (通用) / Generic Field Edit Dialog ─────────────── */
+
+/* FieldDlgProc + ShowFieldDialog: 通用多字段编辑对话框
+   支持最多 FD_FIELDS_MAX (16) 个字段, 每个字段可设 read_only
+   Generic multi-field edit dialog supporting up to 16 fields with read_only option */
 
 #define FD_FIELDS_MAX  16
 
@@ -90,7 +123,7 @@ typedef struct {
     BOOL read_only;
 } FieldDef;
 
-static int g_fdResult = 0; /* -1=running, 0=cancel, 1=ok */
+static int g_fdResult = 0; /* -1=running / 运行中, 0=cancel / 取消, 1=ok / 确定 */
 
 static LRESULT CALLBACK FieldDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -193,7 +226,10 @@ static int ShowFieldDialog(HWND hParent, const char *title,
     return g_fdResult == 1;
 }
 
-/* ─── 刷新各页面 ListView ────────────────────────────────────────── */
+/* ─── 刷新各页面 ListView / Refresh Each Page's ListView ────────────── */
+
+/* 各 PopulateXxxList 函数: 从文件加载链表 → 清空 ListView → 逐行填充 → 释放链表
+   Each Populate function: load from file → clear ListView → populate rows → free list */
 
 static void PopulateDeptList(HWND hLV) {
     ClearLV(hLV);
@@ -281,7 +317,10 @@ static void PopulateSchedList(HWND hLV) {
     free_schedule_list(list);
 }
 
-/* ─── 读取选中行数据到 FieldDef 数组 ─────────────────────────────── */
+/* ─── 读取选中行到 FieldDef / Get Selected Row into FieldDef Array ─── */
+
+/* GetSelectedRow: 将 ListView 选中行的各列值读出到 FieldDef 数组
+   Reads column values from the selected ListView row into FieldDef array */
 
 static void GetSelectedRow(HWND hLV, int col_count, FieldDef *fields) {
     int sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
@@ -291,7 +330,12 @@ static void GetSelectedRow(HWND hLV, int col_count, FieldDef *fields) {
     }
 }
 
-/* ─── 通用管理页面基类 ─────────────────────────────────────────────── */
+/* ─── 通用管理页面 WndProc / Generic Admin Page WndProc ──────────────── */
+
+/* AdminPageWndProc — 所有管理员 CRUD 页面的统一消息处理
+   WM_CREATE: 通过 GWLP_USERDATA 存储 viewId
+   WM_COMMAND: 按 viewId 路由到各模块的 CRUD 分支 (科室/医生/患者/药品/病房/排班/数据)
+   WM_NOTIFY: 处理分析页面的 Tab 切换 (TCN_SELCHANGE) */
 
 static HWND g_analysisTabPages[3];
 
@@ -641,8 +685,9 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 ListView_GetItemText(hLV, sel, 2, f[1].value, f[1].max_len);
                 ListView_GetItemText(hLV, sel, 3, f[2].value, f[2].max_len);
                 ListView_GetItemText(hLV, sel, 4, f[3].value, f[3].max_len);
-                /* 报销比例列显示的是 "XX%"，需要去掉 % */
-                {
+                /* 报销比例列显示 "XX%"，去掉 % 符号后再解析
+                   Strip % suffix from reimbursement ratio column before parsing */
+                char ratioCol[32];
                     char ratioCol[32];
                     ListView_GetItemText(hLV, sel, 5, ratioCol, sizeof(ratioCol));
                     char *pct = strchr(ratioCol, '%');
@@ -853,7 +898,7 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         /* ── 数据管理 ─────────────────────────────────────────── */
         case NAV_ADMIN_DATA:
             switch (cmd) {
-            case 4801: { /* 备份 */
+            case 4801: { /* 备份数据 / Backup */
                 if (backup_data() >= 0) {
                     append_log(g_currentUser.username, "备份", "数据", "all", "手动数据备份");
                     MessageBoxA(hWnd, "数据备份完成！\n备份文件保存在 data/backup/ 目录。", "提示", MB_OK | MB_ICONINFORMATION);
@@ -862,7 +907,7 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 }
                 return 0;
             }
-            case 4802: { /* 恢复 */
+            case 4802: { /* 恢复数据 / Restore */
                 if (MessageBoxA(hWnd, "恢复数据将覆盖当前所有数据，确定继续？", "确认",
                     MB_YESNO | MB_ICONWARNING) != IDYES) return 0;
                 FieldDef f[1] = {{"备份目录名", "", 64, FALSE}};
@@ -908,7 +953,7 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
     return 0;
 }
 
-/* ─── 各页面创建函数 ─────────────────────────────────────────────── */
+/* ─── 各页面创建函数 / Page Creation Functions ──────────────────────── */
 
 static HWND CreateDeptPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -1137,7 +1182,7 @@ static HWND CreateSchedulePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 操作日志页面 ─────────────────────────────────────────────────── */
+/* ─── 操作日志页面 / Operation Log Page ──────────────────────────────── */
 
 static HWND CreateLogPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -1185,7 +1230,7 @@ static HWND CreateLogPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 数据管理页面 ─────────────────────────────────────────────────── */
+/* ─── 数据管理页面 / Data Management Page ───────────────────────────── */
 
 static HWND CreateDataPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -1240,7 +1285,10 @@ static HWND CreateDataPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 报表统计页面 ─────────────────────────────────────────────────── */
+/* ─── 报表统计页面 / Analysis & Reports Page ────────────────────────── */
+
+/* PopulateAnalysisOverview: 汇总关键运营指标 (预约/收入/床位/药品/患者)
+   Aggregate key operational metrics: appointments, revenue, beds, drugs, patients */
 
 static void PopulateAnalysisOverview(HWND hLV) {
     ClearLV(hLV);
@@ -1332,7 +1380,8 @@ static void PopulateAnalysisOverview(HWND hLV) {
     free_patient_list(pats);
 }
 
-static void PopulateAnalysisDoctorLoad(HWND hLV) {
+/* PopulateAnalysisDoctorLoad: 统计每位医生的接诊/处方数, 按病历数分档
+   Per-doctor workload: appointment count, prescription count, load classification */
     ClearLV(hLV);
 
     DoctorNode *docs = load_doctors_list();
@@ -1374,13 +1423,14 @@ static void PopulateAnalysisDoctorLoad(HWND hLV) {
     free_medical_record_list(records);
 }
 
-static void PopulateAnalysisFinancial(HWND hLV) {
+/* PopulateAnalysisFinancial: 按月份汇总处方收入 + 估算报销额 (50% 近似)
+   Monthly revenue aggregation with estimated 50% reimbursement baseline */
     ClearLV(hLV);
 
     PrescriptionNode *prescs = load_prescriptions_list();
     DrugNode *drugs = load_drugs_list();
 
-    /* Aggregate by month */
+    /* 按月份聚合处方金额 / Aggregate prescription revenue by month */
     struct {
         char month[8];
         double total;
@@ -1406,7 +1456,7 @@ static void PopulateAnalysisFinancial(HWND hLV) {
         months[found].count++;
     }
 
-    /* Sort months descending */
+    /* 按月份降序排列 / Sort months descending (bubble sort) */
     for (int i = 0; i < monthCount - 1; i++) {
         for (int j = i + 1; j < monthCount; j++) {
             if (strcmp(months[i].month, months[j].month) < 0) {
@@ -1551,7 +1601,7 @@ static HWND CreateAnalysisPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 重置密码页面 ───────────────────────────────────────────────────── */
+/* ─── 重置密码页面 / Reset Password Page ───────────────────────────── */
 
 static LRESULT CALLBACK ResetPwdDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -1729,7 +1779,10 @@ static HWND CreateResetPwdPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 公开接口 ─────────────────────────────────────────────────────── */
+/* ─── 公开接口 / Public Interface ────────────────────────────────────── */
+
+/* CreateAdminPage — 工厂函数, 按 viewId 路由到各管理员页面创建函数
+   Factory function routing viewId to the appropriate admin page creator */
 
 HWND CreateAdminPage(HWND hParent, int viewId, RECT *rc) {
     switch (viewId) {
