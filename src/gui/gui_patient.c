@@ -315,6 +315,398 @@ static int count_patient_active_appointments(const char *patient_id) {
     return count;
 }
 
+/* ─── 现场挂号对话框 / Onsite Registration Dialog ───────────────────── */
+
+#define IDC_ONSITE_DEPT     3111
+#define IDC_ONSITE_DOCLIST  3112
+#define IDC_ONSITE_OK       3113
+#define IDC_ONSITE_CANCEL   3114
+#define IDC_ONSITE_STATUS   3115
+
+#define ONSITE_SLOTS_PER_DAY 8
+
+static int g_onsiteResult = 0;
+
+/* 统计某医生当日有效现场挂号数 / Count today's valid onsite registrations for a doctor */
+static int count_onsite_today_gui(const char *doctor_id) {
+    OnsiteRegistrationQueue queue = load_onsite_registration_queue();
+    OnsiteRegistrationNode *cur = queue.front;
+    int count = 0;
+    while (cur) {
+        if (strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+            strcmp(cur->data.status, "已完成") != 0 &&
+            strcmp(cur->data.status, "已退号") != 0) {
+            count++;
+        }
+        cur = cur->next;
+    }
+    free_onsite_registration_queue(&queue);
+    return count;
+}
+
+/* 检查是否存在有效挂号冲突（预约+现场） / Check for active registration conflict */
+static int has_registration_conflict_gui(const char *patient_id, const char *doctor_id, const char *department_id) {
+    AppointmentNode *apps = load_appointments_list();
+    for (AppointmentNode *cur = apps; cur; cur = cur->next) {
+        if (strcmp(cur->data.patient_id, patient_id) == 0 &&
+            strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+            strcmp(cur->data.department_id, department_id) == 0 &&
+            strcmp(cur->data.status, "已就诊") != 0 &&
+            strcmp(cur->data.status, "已取消") != 0 &&
+            strcmp(cur->data.status, "已爽约") != 0) {
+            free_appointment_list(apps);
+            return 1;
+        }
+    }
+    free_appointment_list(apps);
+
+    OnsiteRegistrationQueue queue = load_onsite_registration_queue();
+    for (OnsiteRegistrationNode *cur = queue.front; cur; cur = cur->next) {
+        if (strcmp(cur->data.patient_id, patient_id) == 0 &&
+            strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+            strcmp(cur->data.department_id, department_id) == 0 &&
+            strcmp(cur->data.status, "已完成") != 0 &&
+            strcmp(cur->data.status, "已退号") != 0) {
+            free_onsite_registration_queue(&queue);
+            return 1;
+        }
+    }
+    free_onsite_registration_queue(&queue);
+    return 0;
+}
+
+static void RefreshOnsiteDoctorList(HWND hDlg, const char *deptId) {
+    HWND hLV = GetDlgItem(hDlg, IDC_ONSITE_DOCLIST);
+    if (!hLV) return;
+    ListView_DeleteAllItems(hLV);
+
+    char today[12];
+    {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday);
+    }
+
+    DoctorNode *docs = load_doctors_list();
+    int row = 0;
+    for (DoctorNode *d = docs; d; d = d->next) {
+        if (strcmp(d->data.department_id, deptId) != 0) continue;
+        if (!has_doctor_schedule(d->data.doctor_id, today)) continue;
+
+        int used = count_onsite_today_gui(d->data.doctor_id);
+        int remain = ONSITE_SLOTS_PER_DAY - used;
+        if (remain < 0) remain = 0;
+
+        char remText[20];
+        snprintf(remText, sizeof(remText), "余%d/%d", remain, ONSITE_SLOTS_PER_DAY);
+        const char *items[4] = {
+            d->data.doctor_id, d->data.name,
+            d->data.title[0] ? d->data.title : "未设置",
+            remText
+        };
+        AddRow(hLV, row++, 4, items);
+        if (remain == 0) {
+            ListView_SetItemState(hLV, row - 1,
+                LVIS_CUT, LVIS_CUT);  /* gray out full slots */
+        }
+    }
+    free_doctor_list(docs);
+}
+
+static LRESULT CALLBACK OnsiteRegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        int x = 20, y = 15;
+
+        CreateWindowA("STATIC", "现场挂号（当日）",
+            WS_VISIBLE|WS_CHILD|SS_LEFT,
+            x, y, 400, 25, hDlg, NULL, g_hInst, NULL);
+        y += 30;
+
+        CreateWindowA("STATIC", "提示: 现场挂号仅限当天，挂号后自动进入候诊队列。",
+            WS_VISIBLE|WS_CHILD|SS_LEFT,
+            x, y, 450, 20, hDlg, NULL, g_hInst, NULL);
+        y += 28;
+
+        CreateWindowA("STATIC", "选择科室:",
+            WS_VISIBLE|WS_CHILD|SS_LEFT,
+            x, y + 2, 80, 20, hDlg, NULL, g_hInst, NULL);
+        HWND hDept = CreateWindowA("COMBOBOX", "",
+            WS_VISIBLE|WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL|CBS_HASSTRINGS,
+            x + 80, y, 250, 200, hDlg, (HMENU)IDC_ONSITE_DEPT, g_hInst, NULL);
+        DepartmentNode *depts = load_departments_list();
+        if (depts) {
+            for (DepartmentNode *d = depts; d; d = d->next)
+                SendMessageA(hDept, CB_ADDSTRING, 0, (LPARAM)d->data.name);
+            SendMessage(hDept, CB_SETCURSEL, 0, 0);
+            free_department_list(depts);
+        }
+        y += 32;
+
+        CreateWindowA("STATIC", "选择医生:",
+            WS_VISIBLE|WS_CHILD|SS_LEFT,
+            x, y + 2, 80, 20, hDlg, NULL, g_hInst, NULL);
+        y += 22;
+
+        HWND hLV = CreateListView(hDlg, IDC_ONSITE_DOCLIST,
+            x, y, 460, 160);
+        AddCol(hLV, 0, "医生ID", 90);
+        AddCol(hLV, 1, "姓名", 120);
+        AddCol(hLV, 2, "职称", 100);
+        AddCol(hLV, 3, "剩余名额", 100);
+        y += 170;
+
+        /* 初始化医生列表: 用第一个科室 */
+        {
+            DepartmentNode *dl = load_departments_list();
+            if (dl) {
+                /* 默认选择第一个科室 */
+                DepartmentNode *first = dl;
+                char firstDeptId[20] = "";
+                strcpy(firstDeptId, first->data.department_id);
+                free_department_list(dl);
+                RefreshOnsiteDoctorList(hDlg, firstDeptId);
+            }
+        }
+
+        CreateWindowA("STATIC", "", WS_VISIBLE|WS_CHILD|SS_CENTER,
+            x, y, 420, 20, hDlg, (HMENU)IDC_ONSITE_STATUS, g_hInst, NULL);
+        y += 30;
+
+        CreateWindowA("BUTTON", "确认挂号", WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON,
+            x + 80, y, 120, 30, hDlg, (HMENU)IDC_ONSITE_OK, g_hInst, NULL);
+        CreateWindowA("BUTTON", "取消", WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON,
+            x + 220, y, 120, 30, hDlg, (HMENU)IDC_ONSITE_CANCEL, g_hInst, NULL);
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        int code = HIWORD(wParam);
+
+        if (id == IDC_ONSITE_DEPT && code == CBN_SELCHANGE) {
+            char deptName[100] = {0};
+            HWND hDept = GetDlgItem(hDlg, IDC_ONSITE_DEPT);
+            int sel = (int)SendMessageA(hDept, CB_GETCURSEL, 0, 0);
+            if (sel != CB_ERR) {
+                SendMessageA(hDept, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)deptName);
+                DepartmentNode *depts = load_departments_list();
+                for (DepartmentNode *d = depts; d; d = d->next) {
+                    if (strcmp(d->data.name, deptName) == 0) {
+                        RefreshOnsiteDoctorList(hDlg, d->data.department_id);
+                        break;
+                    }
+                }
+                free_department_list(depts);
+            }
+            return 0;
+        }
+
+        if (id == IDC_ONSITE_OK && code == BN_CLICKED) {
+            /* 1. 获取选择的科室和医生 / Get selected department and doctor */
+            HWND hDept = GetDlgItem(hDlg, IDC_ONSITE_DEPT);
+            HWND hLV   = GetDlgItem(hDlg, IDC_ONSITE_DOCLIST);
+
+            int deptSel = (int)SendMessageA(hDept, CB_GETCURSEL, 0, 0);
+            if (deptSel == CB_ERR) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, "请选择科室");
+                return 0;
+            }
+
+            int docSel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
+            if (docSel < 0) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, "请选择一名医生");
+                return 0;
+            }
+
+            char deptName[100] = {0}, docId[MAX_ID] = {0};
+            SendMessageA(hDept, CB_GETLBTEXT, (WPARAM)deptSel, (LPARAM)deptName);
+            ListView_GetItemText(hLV, docSel, 0, docId, sizeof(docId));
+
+            /* 获取科室 ID / Get department ID */
+            char deptId[MAX_ID] = {0};
+            DepartmentNode *depts = load_departments_list();
+            for (DepartmentNode *d = depts; d; d = d->next) {
+                if (strcmp(d->data.name, deptName) == 0) {
+                    strcpy(deptId, d->data.department_id);
+                    break;
+                }
+            }
+            free_department_list(depts);
+
+            if (deptId[0] == 0 || docId[0] == 0) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, "选择无效");
+                return 0;
+            }
+
+            /* 2. 获取患者 ID / Get patient ID */
+            const char *pid = GetPatientId();
+            if (!pid || pid[0] == 0) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, "未找到患者信息");
+                return 0;
+            }
+
+            /* 3. 爽约检查 / No-show check */
+            int noShowCount = count_patient_no_shows(pid);
+            if (noShowCount >= 3) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS,
+                    "您有3次以上爽约记录, 暂无法挂号");
+                return 0;
+            }
+
+            /* 4. 活跃记录数检查 (预约+现场) / Active registrations check */
+            {
+                int activeAppt = count_patient_active_appointments(pid);
+                OnsiteRegistrationQueue q = load_onsite_registration_queue();
+                int activeOnsite = 0;
+                for (OnsiteRegistrationNode *c = q.front; c; c = c->next) {
+                    if (strcmp(c->data.patient_id, pid) == 0 &&
+                        strcmp(c->data.status, "排队中") == 0)
+                        activeOnsite++;
+                }
+                free_onsite_registration_queue(&q);
+                if (activeAppt + activeOnsite >= 3) {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg),
+                        "您已有 %d 条活跃挂号记录 (最多 3 条)", activeAppt + activeOnsite);
+                    SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, msg);
+                    return 0;
+                }
+            }
+
+            /* 5. 重复冲突检查 / Duplicate check */
+            if (has_registration_conflict_gui(pid, docId, deptId)) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS,
+                    "您已有该医生的有效挂号记录, 请勿重复挂号");
+                return 0;
+            }
+
+            /* 6. 医生现场号满额检查 / Doctor onsite slots full check */
+            if (count_onsite_today_gui(docId) >= ONSITE_SLOTS_PER_DAY) {
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS,
+                    "该医生今日现场号已满, 请选择其他医生或预约挂号");
+                return 0;
+            }
+
+            /* 7. 确认 / Confirm */
+            char confirmMsg[256];
+            snprintf(confirmMsg, sizeof(confirmMsg),
+                "确认现场挂号?\n\n科室: %s\n医生: %s\n\n挂号后将进入排队队列。",
+                deptName, docId);
+            if (MessageBoxA(hDlg, confirmMsg, "确认挂号",
+                            MB_YESNO | MB_ICONQUESTION) != IDYES)
+                return 0;
+
+            /* 8. 创建现场号 / Create onsite registration */
+            OnsiteRegistration reg;
+            memset(&reg, 0, sizeof(reg));
+            generate_id(reg.onsite_id, MAX_ID, "OS");
+            strcpy(reg.patient_id, pid);
+            strcpy(reg.doctor_id, docId);
+            strcpy(reg.department_id, deptId);
+            reg.queue_number = get_next_onsite_queue_number(docId, deptId);
+            strcpy(reg.status, "排队中");
+            get_current_time(reg.create_time, sizeof(reg.create_time));
+
+            /* 加载患者信息判断是否急诊 / Check if emergency patient */
+            int is_emergency = 0;
+            PatientNode *pts = load_patients_list();
+            if (pts) {
+                for (PatientNode *p = pts; p; p = p->next) {
+                    if (strcmp(p->data.patient_id, pid) == 0) {
+                        is_emergency = p->data.is_emergency;
+                        break;
+                    }
+                }
+                free_patient_list(pts);
+            }
+
+            OnsiteRegistrationQueue queue = load_onsite_registration_queue();
+            int ret = enqueue_onsite_registration(&queue, &reg, is_emergency);
+            if (ret != SUCCESS) {
+                free_onsite_registration_queue(&queue);
+                SetDlgItemTextA(hDlg, IDC_ONSITE_STATUS, "入队失败");
+                return 0;
+            }
+            save_onsite_registration_queue(&queue);
+            free_onsite_registration_queue(&queue);
+
+            /* 增加医生繁忙度 / Increase doctor busy level */
+            DoctorNode *docs = load_doctors_list();
+            for (DoctorNode *d = docs; d; d = d->next) {
+                if (strcmp(d->data.doctor_id, docId) == 0) {
+                    d->data.busy_level++;
+                    break;
+                }
+            }
+            save_doctors_list(docs);
+            free_doctor_list(docs);
+
+            append_log(g_currentUser.username, "现场挂号", "onsite",
+                       reg.onsite_id, deptName);
+
+            char successMsg[256];
+            snprintf(successMsg, sizeof(successMsg),
+                "现场挂号成功!\n\n现场单号: %s\n排队号: %d\n\n请前往「预约查询」查看排队状态。",
+                reg.onsite_id, reg.queue_number);
+            MessageBoxA(hDlg, successMsg, "成功", MB_OK | MB_ICONINFORMATION);
+
+            g_onsiteResult = 1;
+            DestroyWindow(hDlg);
+            return 0;
+        }
+
+        if (id == IDC_ONSITE_CANCEL && code == BN_CLICKED) {
+            g_onsiteResult = 0;
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        g_onsiteResult = 0;
+        DestroyWindow(hDlg);
+        return 0;
+    default:
+        return DefWindowProcA(hDlg, msg, wParam, lParam);
+    }
+}
+
+static int ShowOnsiteRegDialog(HWND hParent) {
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = OnsiteRegDlgProc;
+    wc.hInstance = g_hInst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = "PatientOnsiteRegDialog";
+    RegisterClassA(&wc);
+
+    HWND hDlg = CreateWindowExA(0, "PatientOnsiteRegDialog", "现场挂号（当日）",
+        WS_VISIBLE|WS_POPUPWINDOW|WS_CAPTION|WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 520, 420,
+        hParent, NULL, g_hInst, NULL);
+    if (!hDlg) return 0;
+
+    RECT pr, rc;
+    GetWindowRect(hParent, &pr);
+    GetWindowRect(hDlg, &rc);
+    SetWindowPos(hDlg, NULL,
+        pr.left+(pr.right-pr.left-(rc.right-rc.left))/2,
+        pr.top+(pr.bottom-pr.top-(rc.bottom-rc.top))/2,
+        0, 0, SWP_NOSIZE|SWP_NOZORDER);
+
+    EnableWindow(hParent, FALSE);
+    g_onsiteResult = -1;
+    MSG msg;
+    while (g_onsiteResult == -1 && GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
+    return g_onsiteResult == 1;
+}
+
 /* ─── 挂号对话框 / Registration Dialog ──────────────────────────────── */
 
 /* 挂号对话框: 科室下拉→联动过滤医生→日期下拉(今天~+6天)→时段下拉(7个时段)
@@ -772,9 +1164,16 @@ static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
 
         switch (LOWORD(wParam)) {
 
-        case 1010: { /* 挂号（从挂号页面发起） */
+        case 1010: { /* 预约挂号（从挂号页面发起） */
             if (ShowRegDialog(hWnd)) {
                 MessageBoxA(hWnd, "挂号成功！请前往「预约查询」查看。", "成功", MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        }
+
+        case 1011: { /* 现场挂号（从挂号页面发起） */
+            if (ShowOnsiteRegDialog(hWnd)) {
+                MessageBoxA(hWnd, "现场挂号成功！请前往「预约查询」查看排队状态。", "成功", MB_OK | MB_ICONINFORMATION);
             }
             return 0;
         }
@@ -945,20 +1344,29 @@ static HWND CreateRegisterPage(HWND hParent, RECT *rc) {
     int w = (rc->right - rc->left) - 40;
     int y = 20;
 
-    CreateWindowA("STATIC", "预约挂号",
+    CreateWindowA("STATIC", "请选择挂号方式",
         WS_VISIBLE | WS_CHILD | SS_LEFT,
         20, y, 200, 25, hPage, NULL, g_hInst, NULL);
-    y += 30;
-
-    CreateWindowA("STATIC",
-        "点击下方按钮选择科室和医生进行预约挂号",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        20, y, 400, 20, hPage, NULL, g_hInst, NULL);
     y += 35;
 
-    CreateWindowA("BUTTON", "开始挂号",
+    CreateWindowA("STATIC", "预约挂号: 选择未来7天内日期和时段",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        20, y, 400, 20, hPage, NULL, g_hInst, NULL);
+    y += 25;
+
+    CreateWindowA("BUTTON", "预约挂号",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        20, y, 120, 35, hPage, (HMENU)1010, g_hInst, NULL);
+        20, y, 160, 35, hPage, (HMENU)1010, g_hInst, NULL);
+    y += 50;
+
+    CreateWindowA("STATIC", "现场挂号: 当日挂号，自动进入排队队列",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        20, y, 400, 20, hPage, NULL, g_hInst, NULL);
+    y += 25;
+
+    CreateWindowA("BUTTON", "现场挂号 (当日)",
+        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        20, y, 160, 35, hPage, (HMENU)1011, g_hInst, NULL);
 
     return hPage;
 }
