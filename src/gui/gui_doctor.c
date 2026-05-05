@@ -726,7 +726,7 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 return 0;
             }
 
-            int isOnsite = (strncmp(svcId, "OS_", 3) == 0);
+            int isOnsite = (strncmp(svcId, "OS", 2) == 0);
             char savedPatientId[MAX_ID] = "";
             char savedDeptId[MAX_ID] = "";
 
@@ -832,7 +832,7 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
         }
 
         if (LOWORD(wParam) == 3204) {
-            if (g_pendingApptId[0] == 0 || strncmp(g_pendingApptId, "OS_", 3) != 0) {
+            if (g_pendingApptId[0] == 0 || strncmp(g_pendingApptId, "OS", 2) != 0) {
                 MessageBoxA(GetParent(hWnd), "当前没有进行中的现场接诊", "提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
@@ -1023,7 +1023,7 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
         140, y, 140, 30, hPage, (HMENU)3204, g_hInst, NULL);
 
     /* Show a hint if there is a pending onsite ID from reminder page */
-    if (g_pendingApptId[0] && strncmp(g_pendingApptId, "OS_", 3) == 0) {
+    if (g_pendingApptId[0] && strncmp(g_pendingApptId, "OS", 2) == 0) {
         char hint[100];
         snprintf(hint, sizeof(hint), "  - 当前选中: %s (现场患者)", g_pendingApptId);
         CreateWindowA("STATIC", hint, WS_VISIBLE | WS_CHILD | SS_LEFT,
