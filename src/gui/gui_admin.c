@@ -687,7 +687,7 @@ static LRESULT CALLBACK AdminPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 ListView_GetItemText(hLV, sel, 4, f[3].value, f[3].max_len);
                 /* 报销比例列显示 "XX%"，去掉 % 符号后再解析
                    Strip % suffix from reimbursement ratio column before parsing */
-                char ratioCol[32];
+                {
                     char ratioCol[32];
                     ListView_GetItemText(hLV, sel, 5, ratioCol, sizeof(ratioCol));
                     char *pct = strchr(ratioCol, '%');
@@ -1380,8 +1380,9 @@ static void PopulateAnalysisOverview(HWND hLV) {
     free_patient_list(pats);
 }
 
-/* PopulateAnalysisDoctorLoad: 统计每位医生的接诊/处方数, 按病历数分档
-   Per-doctor workload: appointment count, prescription count, load classification */
+static void PopulateAnalysisDoctorLoad(HWND hLV) {
+    /* 统计每位医生的接诊/处方数, 按病历数分档
+       Per-doctor workload: appointment count, prescription count, load classification */
     ClearLV(hLV);
 
     DoctorNode *docs = load_doctors_list();
@@ -1423,8 +1424,9 @@ static void PopulateAnalysisOverview(HWND hLV) {
     free_medical_record_list(records);
 }
 
-/* PopulateAnalysisFinancial: 按月份汇总处方收入 + 估算报销额 (50% 近似)
-   Monthly revenue aggregation with estimated 50% reimbursement baseline */
+static void PopulateAnalysisFinancial(HWND hLV) {
+    /* 按月份汇总处方收入 + 估算报销额 (50% 近似)
+       Monthly revenue aggregation with estimated 50% reimbursement baseline */
     ClearLV(hLV);
 
     PrescriptionNode *prescs = load_prescriptions_list();

@@ -151,7 +151,8 @@ static ConsultData g_consultCtx;          /* 接诊上下文 (跨回调共享) /
 #define IDC_RX_CONFIRM    3708
 #define IDC_RX_CANCEL     3709
 
-/* 刷新药品列表 (可按名称过滤) / Refresh drug list, optionally filter by name */
+static void RefreshDrugList(HWND hDlg, const char *filter) {
+    /* 刷新药品列表 (可按名称过滤) / Refresh drug list, optionally filter by name */
     HWND hLV = GetDlgItem(hDlg, IDC_RX_DRUG_LIST);
     if (!hLV) return;
     ListView_DeleteAllItems(hLV);
@@ -172,7 +173,8 @@ static ConsultData g_consultCtx;          /* 接诊上下文 (跨回调共享) /
     free_drug_list(list);
 }
 
-/* 刷新购物车列表 + 更新总计金额 / Refresh cart list + update grand total */
+static void RefreshCartList(HWND hDlg) {
+    /* 刷新购物车列表 + 更新总计金额 / Refresh cart list + update grand total */
     HWND hLV = GetDlgItem(hDlg, IDC_RX_CART_LIST);
     if (!hLV) return;
     ListView_DeleteAllItems(hLV);
@@ -574,6 +576,7 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
     }
     case WM_COMMAND: {
         if (LOWORD(wParam) == 3201) {
+            const char *did = GetDoctorId();
             /* 保存诊断: 创建病历→更新预约→推进治疗阶段→询问开药
                Save: create medical record → update appointment → advance stage → offer Rx */
             if (strlen(did) == 0) {
