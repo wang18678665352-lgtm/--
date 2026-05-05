@@ -290,6 +290,7 @@ static void PopulateNavTree(void) {
             {"住院信息",      NAV_PATIENT_WARD},
             {"治疗进度",      NAV_PATIENT_PROGRESS},
             {"个人信息",      NAV_PATIENT_PROFILE},
+            {"修改密码",      NAV_PATIENT_CHANGE_PWD},
         };
         for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
             tvis.hParent = hRoot;
@@ -314,6 +315,7 @@ static void PopulateNavTree(void) {
             {"进度更新",        NAV_DOCTOR_PROGRESS},
             {"病历模板",        NAV_DOCTOR_TEMPLATE},
             {"开药",            NAV_DOCTOR_PRESCRIBE},
+            {"修改密码",        NAV_DOCTOR_CHANGE_PWD},
         };
         for (int i = 0; i < (int)(sizeof(items)/sizeof(items[0])); i++) {
             tvis.hParent = hRoot;
@@ -385,6 +387,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_PATIENT_WARD:
     case NAV_PATIENT_PROGRESS:
     case NAV_PATIENT_PROFILE:
+    case NAV_PATIENT_CHANGE_PWD:
         g_hContentView = CreatePatientPage(hParent, viewId, &rc);
         break;
     /* 医生页面 (3001-3007) / Doctor pages */
@@ -395,6 +398,7 @@ void SwitchView(HWND hWnd, int viewId) {
     case NAV_DOCTOR_PROGRESS:
     case NAV_DOCTOR_TEMPLATE:
     case NAV_DOCTOR_PRESCRIBE:
+    case NAV_DOCTOR_CHANGE_PWD:
         g_hContentView = CreateDoctorPage(hParent, viewId, &rc);
         break;
     /* 管理员页面 (4001-4010) / Admin pages */

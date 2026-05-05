@@ -61,6 +61,7 @@ enum {
     NAV_PATIENT_WARD,                                /* 病房信息 / ward info */
     NAV_PATIENT_PROGRESS,                            /* 治疗进度 / treatment progress */
     NAV_PATIENT_PROFILE,                             /* 个人资料 / profile */
+    NAV_PATIENT_CHANGE_PWD,                          /* 修改密码 / change password */
 };
 
 /* =======================  医生导航项 / Doctor Navigation Items ======================= */
@@ -72,6 +73,7 @@ enum {
     NAV_DOCTOR_PROGRESS,                              /* 治疗进度 / treatment progress */
     NAV_DOCTOR_TEMPLATE,                              /* 诊断模板 / diagnosis templates */
     NAV_DOCTOR_PRESCRIBE,                             /* 开具处方 / prescribe */
+    NAV_DOCTOR_CHANGE_PWD,                            /* 修改密码 / change password */
 };
 
 /* =======================  管理员导航项 / Admin Navigation Items ======================= */

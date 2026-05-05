@@ -25,6 +25,7 @@
 #include "gui_main.h"
 #include "../data_storage.h"
 #include "../public.h"
+#include "../sha256.h"
 
 /* ─── ListView 工具函数 / ListView Utility Functions ────────────────── */
 static HWND CreateListView(HWND hParent, int id, int x, int y, int w, int h) {
@@ -1751,6 +1752,120 @@ static HWND CreatePrescribePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
+/* ─── 修改密码页面 / Change Password Page ──────────────────────────── */
+
+static LRESULT CALLBACK DocChangePwdWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCT *cs = (CREATESTRUCT *)lParam;
+        SetWindowLongPtrA(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (HIWORD(wParam) != BN_CLICKED) return 0;
+        if (LOWORD(wParam) == 1030) {
+            char oldPwd[100] = "", newPwd[100] = "", confirmPwd[100] = "";
+            GetDlgItemTextA(hWnd, 1032, oldPwd, sizeof(oldPwd));
+            GetDlgItemTextA(hWnd, 1033, newPwd, sizeof(newPwd));
+            GetDlgItemTextA(hWnd, 1034, confirmPwd, sizeof(confirmPwd));
+
+            if (oldPwd[0] == 0 || newPwd[0] == 0 || confirmPwd[0] == 0) {
+                MessageBoxA(hWnd, "请填写所有密码字段", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+            if (strcmp(newPwd, confirmPwd) != 0) {
+                MessageBoxA(hWnd, "两次输入的新密码不一致", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            uint8_t hashBytes[SHA256_DIGEST_SIZE];
+            char hashHex[SHA256_HEX_SIZE];
+            sha256_hash((const uint8_t *)oldPwd, strlen(oldPwd), hashBytes);
+            sha256_hex(hashBytes, hashHex);
+
+            if (strcmp(g_currentUser.password, hashHex) != 0) {
+                MessageBoxA(hWnd, "旧密码错误", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            sha256_hash((const uint8_t *)newPwd, strlen(newPwd), hashBytes);
+            sha256_hex(hashBytes, hashHex);
+
+            UserNode *users = load_users_list();
+            UserNode *cur = users;
+            while (cur) {
+                if (strcmp(cur->data.username, g_currentUser.username) == 0 &&
+                    strcmp(cur->data.role, g_currentUser.role) == 0) {
+                    strcpy(cur->data.password, hashHex);
+                    strcpy(g_currentUser.password, hashHex);
+                    break;
+                }
+                cur = cur->next;
+            }
+            save_users_list(users);
+            free_user_list(users);
+
+            append_log(g_currentUser.username, "修改密码", "user", g_currentUser.username, "");
+            MessageBoxA(hWnd, "密码修改成功", "成功", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+        return 0;
+    default:
+        return DefWindowProcA(hWnd, msg, wParam, lParam);
+    }
+}
+
+static HWND CreateChangePwdPage(HWND hParent, RECT *rc) {
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc   = DocChangePwdWndProc;
+    wc.hInstance     = g_hInst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = "DocChgPwdPage";
+    RegisterClassA(&wc);
+
+    HWND hPage = CreateWindowExA(0, "DocChgPwdPage", "",
+        WS_VISIBLE | WS_CHILD | WS_CLIPCHILDREN,
+        rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
+        hParent, NULL, g_hInst, (LPVOID)(INT_PTR)NAV_DOCTOR_CHANGE_PWD);
+    if (!hPage) return NULL;
+
+    int y = 20;
+    CreateWindowA("STATIC", "修改密码",
+        WS_VISIBLE | WS_CHILD | SS_CENTER,
+        100, y, 200, 24, hPage, NULL, g_hInst, NULL);
+
+    y += 35;
+    CreateWindowA("STATIC", "旧密码:",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        80, y + 2, 70, 20, hPage, NULL, g_hInst, NULL);
+    CreateWindowA("EDIT", "",
+        WS_VISIBLE | WS_CHILD | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL,
+        155, y, 180, 22, hPage, (HMENU)1032, g_hInst, NULL);
+
+    y += 32;
+    CreateWindowA("STATIC", "新密码:",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        80, y + 2, 70, 20, hPage, NULL, g_hInst, NULL);
+    CreateWindowA("EDIT", "",
+        WS_VISIBLE | WS_CHILD | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL,
+        155, y, 180, 22, hPage, (HMENU)1033, g_hInst, NULL);
+
+    y += 32;
+    CreateWindowA("STATIC", "确认密码:",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        80, y + 2, 70, 20, hPage, NULL, g_hInst, NULL);
+    CreateWindowA("EDIT", "",
+        WS_VISIBLE | WS_CHILD | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL,
+        155, y, 180, 22, hPage, (HMENU)1034, g_hInst, NULL);
+
+    y += 45;
+    CreateWindowA("BUTTON", "确认修改",
+        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        160, y, 90, 30, hPage, (HMENU)1030, g_hInst, NULL);
+
+    return hPage;
+}
+
 /* ─── 公开接口 / Public Interface ────────────────────────────────────── */
 
 /* CreateDoctorPage — 工厂函数, 按 viewId 路由到各页面创建函数
@@ -1765,6 +1880,7 @@ HWND CreateDoctorPage(HWND hParent, int viewId, RECT *rc) {
     case NAV_DOCTOR_PROGRESS:     return CreateProgressPage(hParent, rc);
     case NAV_DOCTOR_TEMPLATE:     return CreateTemplatePage(hParent, rc);
     case NAV_DOCTOR_PRESCRIBE:    return CreatePrescribePage(hParent, rc);
+    case NAV_DOCTOR_CHANGE_PWD:  return CreateChangePwdPage(hParent, rc);
     default: return NULL;
     }
 }
