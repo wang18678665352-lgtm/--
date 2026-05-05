@@ -1,37 +1,123 @@
-﻿#include "patient.h"
+/*
+ * ============================================================================
+ * patient.c — 患者工作流模块 (Patient Workflow Module)
+ * ============================================================================
+ *
+ * 【中文说明】
+ * 本文件实现了医院管理系统(C99控制台模式)中患者角色的完整业务流程。
+ * 患者登录后可执行以下操作:
+ *   1. 预约挂号  — 按科室->医生->日期->时间段(7天窗口)预约,每时段限6人
+ *   2. 现场挂号  — 当日排队挂号,每天每位医生限8人,自动进入候诊队列
+ *   3. 挂号状态查询 — 查看/取消预约和现场排队(含排队位置显示)
+ *   4. 诊断结果查询 — 查看病历记录和处方详情
+ *   5. 住院信息查看 — 浏览各病房的床位情况
+ *   6. 治疗进度查看 — 查看当前治疗阶段
+ *   7. 修改个人信息 — 编辑姓名/性别/年龄/电话/地址/患者类型
+ *
+ * 关键业务约束:
+ *   - 预约天数窗口: 当天起7天内 (0=今天, 1=明天, ..., 6=第7天)
+ *   - 时间段按7小时段划分: 08:00-09:00, 09:00-10:00, ..., 16:00-17:00
+ *   - 每时段容量: 6人/半小时段 (APPOINTMENT_SLOTS_PER_HALF_DAY)
+ *   - 每位医生每日现场挂号上限: 8人 (ONSITE_SLOTS_PER_DAY)
+ *   - 冲突预防: 同一患者-医生-科室不允许重复有效挂号
+ *   - 取消挂号时恢复医生繁忙度 (busy_level--)
+ *   - 急诊患者现场挂号自动插队(按急诊优先排序)
+ *   - 患者类型(普通/医保/军人)影响药品报销比例
+ *
+ * 【English】
+ * This file implements the complete business workflow for the patient role
+ * in a C99 console-mode hospital management system.
+ * After login, a patient can:
+ *   1. Appointment Booking   — Book by dept->doctor->date->time slot (7-day window), 6 per slot
+ *   2. Onsite Registration   — Same-day walk-in queue, 8 per doctor per day, auto-queued
+ *   3. Registration Status   — View/cancel appointments and onsite queue (with queue position)
+ *   4. Diagnosis Query       — View medical records and prescription details
+ *   5. Ward Info             — Browse ward bed availability
+ *   6. Treatment Progress    — View current treatment stage
+ *   7. Edit Profile          — Edit name/gender/age/phone/address/patient type
+ *
+ * Key business constraints:
+ *   - Appointment window: 7 days from today (0=today, 1=tomorrow, ..., 6=day 7)
+ *   - Time slots: 7 hourly slots (08:00-09:00 through 16:00-17:00)
+ *   - Per-slot capacity: 6 appointments per slot (APPOINTMENT_SLOTS_PER_HALF_DAY)
+ *   - Daily onsite limit: 8 per doctor per day (ONSITE_SLOTS_PER_DAY)
+ *   - Conflict prevention: no duplicate active registrations for same patient-doctor-dept
+ *   - Cancellation restores doctor busy level (busy_level--)
+ *   - Emergency patients get priority queue position (sorted ahead of normal)
+ *   - Patient type (普通/医保/军人) affects drug reimbursement ratio
+ * ============================================================================
+ */
+
+#include "patient.h"
 #include "public.h"
 #include "ui_utils.h"
 #include "login.h"
 
-// 预约挂号常量
-#define APPOINTMENT_SLOTS_PER_HALF_DAY 6
-#define ONSITE_SLOTS_PER_DAY 8
+/* ============================================================================
+ * 业务常量 (Business Constants)
+ * ============================================================================
+ * 预约时段容量和现场挂号容量定义了系统的并发极限。
+ * Appointment slot capacity and onsite daily limit define system concurrency limits.
+ * ============================================================================
+ */
+#define APPOINTMENT_SLOTS_PER_HALF_DAY 6  /* 每半小时段最多6个预约号 Max 6 appointments per time slot */
+#define ONSITE_SLOTS_PER_DAY 8            /* 每位医生每日最多8个现场号 Max 8 onsite registrations per doctor per day */
 
+/* ============================================================================
+ * 工具辅助函数 (Utility Helper Functions)
+ * ============================================================================
+ * 以下为患者模块内部使用的静态辅助函数,封装了常见的日期/冲突/容量检查。
+ * These are static helper functions used internally by the patient module,
+ * encapsulating common date / conflict / capacity checks.
+ * ============================================================================
+ */
+
+/**
+ * is_closed_status — 判断挂号状态是否为"已关闭"(不可再操作)
+ *                   Check if a registration status is "closed" (no further operations allowed)
+ * 已关闭状态包括: 已取消、已完成、已就诊、已退号。
+ * 冲突检查和容量统计时需排除这些状态。
+ * Closed statuses: cancelled, completed, visited, withdrawn.
+ * These are excluded during conflict checks and capacity counting.
+ */
 static int is_closed_status(const char *status) {
     return strcmp(status, "已取消") == 0 || strcmp(status, "已完成") == 0 || strcmp(status, "已就诊") == 0 || strcmp(status, "已退号") == 0;
 }
 
+/**
+ * get_date_after — 计算N天后的日期字符串
+ *                  Compute the date string N days from today
+ * 使用mktime自动处理跨月/跨年。
+ * Uses mktime for automatic month/year rollover.
+ */
 static void get_date_after(int days, char *buffer, int size) {
     time_t now = time(NULL);
     struct tm tm_info;
     memcpy(&tm_info, localtime(&now), sizeof(tm_info));
     tm_info.tm_mday += days;
-    mktime(&tm_info);
+    mktime(&tm_info);  /* 标准化日期(处理越界) Normalize date (handle overflow) */
     strftime(buffer, size, "%Y-%m-%d", &tm_info);
 }
 
+/**
+ * select_date_option — 让用户从7天(今天+后6天)中选择一个就诊日期
+ *                      Let user select a date from a 7-day window (today + next 6 days)
+ * 返回选择的日期字符串。
+ * Return the selected date string.
+ */
 static int select_date_option(char *selected_date, int size) {
     char dates[7][20];
     char day_label[7][20];
     int i;
 
     ui_header("选择日期");
+    /* 生成7天日期列表,并标记今天/明天 Generate 7-day date list with today/tomorrow labels */
     for (i = 0; i < 7; i++) {
         get_date_after(i, dates[i], sizeof(dates[i]));
         if (i == 0) {
-            snprintf(day_label[i], sizeof(day_label[i]), "  今天");
+            snprintf(day_label[i], sizeof(day_label[i]), "  今天");      /* Today */
         } else if (i == 1) {
-            snprintf(day_label[i], sizeof(day_label[i]), "  明天");
+            snprintf(day_label[i], sizeof(day_label[i]), "  明天");      /* Tomorrow */
         } else {
             snprintf(day_label[i], sizeof(day_label[i]), "  ");
         }
@@ -51,6 +137,12 @@ static int select_date_option(char *selected_date, int size) {
     return SUCCESS;
 }
 
+/**
+ * count_appointments_for_slot — 统计某医生在某日期某时段的有效预约数
+ *                               Count valid appointments for a doctor on a specific date/time slot
+ * 排除"已取消"和"已就诊"状态,只统计有效预约。
+ * Excludes "已取消" (cancelled) and "已就诊" (visited) statuses.
+ */
 static int count_appointments_for_slot(const char *doctor_id, const char *date, const char *time_slot) {
     AppointmentNode *head = load_appointments_list();
     AppointmentNode *current = head;
@@ -70,6 +162,12 @@ static int count_appointments_for_slot(const char *doctor_id, const char *date, 
     return count;
 }
 
+/**
+ * count_onsite_today — 统计某医生当日的有效现场挂号数
+ *                      Count today's valid onsite registrations for a doctor
+ * 排除"已完成"和"已退号"状态。
+ * Excludes "已完成" (completed) and "已退号" (withdrawn) statuses.
+ */
 static int count_onsite_today(const char *doctor_id) {
     OnsiteRegistrationQueue queue = load_onsite_registration_queue();
     OnsiteRegistrationNode *current = queue.front;
@@ -87,11 +185,17 @@ static int count_onsite_today(const char *doctor_id) {
     return count;
 }
 
+/**
+ * select_department — 让用户通过搜索列表选择一个科室
+ *                     Let user select a department from a searchable list
+ * 返回选中的科室ID。
+ * Return the selected department ID.
+ */
 static int select_department(const char *prompt, char *department_id_out) {
     DepartmentNode *dept_head = load_departments_list();
     int count = count_department_list(dept_head);
     if (count == 0) {
-        ui_warn("暂无科室信息，请联系管理员添加。");
+        ui_warn("暂无科室信息，请联系管理员添加。");  /* No departments, contact admin */
         free_department_list(dept_head);
         return ERROR_NOT_FOUND;
     }
@@ -117,6 +221,12 @@ static int select_department(const char *prompt, char *department_id_out) {
     return SUCCESS;
 }
 
+/**
+ * load_current_patient — 根据当前登录用户加载患者数据
+ *                        Load patient data from the currently logged-in user
+ * 通过username匹配患者链表中的记录。
+ * Match username against the patient linked list.
+ */
 static int load_current_patient(const User *current_user, Patient *current_patient) {
     PatientNode *patient_head = load_patients_list();
     PatientNode *current_patient_node = patient_head;
@@ -135,12 +245,21 @@ static int load_current_patient(const User *current_user, Patient *current_patie
     return ERROR_NOT_FOUND;
 }
 
+/**
+ * has_registration_conflict — 检查患者是否已存在与指定医生/科室的有效挂号(冲突检测)
+ *                             Check for duplicate active registrations (conflict detection)
+ * 在预约记录和现场排队中查找(患者, 医生, 科室)三元组的有效记录。
+ * 如果存在非关闭状态的记录,返回1(冲突);否则返回0(无冲突)。
+ * Searches appointments and onsite queue for valid (patient, doctor, dept) triples.
+ * Returns 1 if a non-closed record exists (conflict), 0 otherwise (no conflict).
+ */
 static int has_registration_conflict(const char *patient_id, const char *doctor_id, const char *department_id) {
     AppointmentNode *appointment_head = load_appointments_list();
     AppointmentNode *current_appointment = appointment_head;
     OnsiteRegistrationQueue onsite_queue = load_onsite_registration_queue();
     OnsiteRegistrationNode *current_onsite = onsite_queue.front;
 
+    /* 检查预约记录中的冲突 Check appointment records */
     while (current_appointment) {
         if (strcmp(current_appointment->data.patient_id, patient_id) == 0 &&
             strcmp(current_appointment->data.doctor_id, doctor_id) == 0 &&
@@ -148,11 +267,12 @@ static int has_registration_conflict(const char *patient_id, const char *doctor_
             !is_closed_status(current_appointment->data.status)) {
             free_appointment_list(appointment_head);
             free_onsite_registration_queue(&onsite_queue);
-            return 1;
+            return 1;  /* 存在冲突 Conflict found */
         }
         current_appointment = current_appointment->next;
     }
 
+    /* 检查现场队列中的冲突 Check onsite queue */
     while (current_onsite) {
         if (strcmp(current_onsite->data.patient_id, patient_id) == 0 &&
             strcmp(current_onsite->data.doctor_id, doctor_id) == 0 &&
@@ -160,7 +280,7 @@ static int has_registration_conflict(const char *patient_id, const char *doctor_
             !is_closed_status(current_onsite->data.status)) {
             free_appointment_list(appointment_head);
             free_onsite_registration_queue(&onsite_queue);
-            return 1;
+            return 1;  /* 存在冲突 Conflict found */
         }
         current_onsite = current_onsite->next;
     }
@@ -170,6 +290,10 @@ static int has_registration_conflict(const char *patient_id, const char *doctor_
     return 0;
 }
 
+/**
+ * print_doctor_name_by_id — 根据医生ID查找并输出医生姓名
+ *                           Look up doctor name by doctor ID
+ */
 static void print_doctor_name_by_id(const char *doctor_id, char *doctor_name, size_t size) {
     DoctorNode *doctor_head = load_doctors_list();
     DoctorNode *current_doc = doctor_head;
@@ -189,6 +313,27 @@ static void print_doctor_name_by_id(const char *doctor_id, char *doctor_name, si
     free_doctor_list(doctor_head);
 }
 
+/* ============================================================================
+ * 预约挂号 (Appointment Booking)
+ * ============================================================================
+ * 完整的预约挂号流程(5步):
+ *   第1步: 选择日期 (7天窗口: 今天~第7天)
+ *   第2步: 选择科室
+ *   第3步: 显示该科室下当天有排班的医生及剩余预约名额(上午/下午),分页浏览
+ *   第4步: 从有排班的医生中选择一位
+ *   第5步: 选择时间段(7个时段: 08:00~17:00,每小时一段),检查容量(6人/段)
+ *   确认后: 冲突检测 -> 创建预约 -> 增加医生繁忙度
+ *
+ * Complete appointment booking flow (5 steps):
+ *   Step 1: Choose date (7-day window: today ~ day 7)
+ *   Step 2: Choose department
+ *   Step 3: Show doctors with schedule on that date + remaining slots, paginated
+ *   Step 4: Select a doctor from scheduled doctors
+ *   Step 5: Choose time slot (7 slots: 08:00~17:00, hourly), check capacity (6/slot)
+ *   Confirmation: conflict check -> create appointment -> increase doctor busy level
+ * ============================================================================
+ */
+
 static int patient_standard_register_menu(const User *current_user) {
     char department_id[MAX_ID];
     char selected_date[20];
@@ -207,28 +352,29 @@ static int patient_standard_register_menu(const User *current_user) {
 
     printf("\n");
     ui_header("预约挂号");
-    printf(C_DIM "  提示: 可提前7天预约就诊日期" C_RESET "\n");
+    printf(C_DIM "  提示: 可提前7天预约就诊日期" C_RESET "\n");  /* Tip: appointments available up to 7 days in advance */
 
-    // Step 1: 选择日期
+    /* === 第1步: 选择日期 Step 1: Choose date === */
     result = select_date_option(selected_date, sizeof(selected_date));
     if (result != SUCCESS) {
         return result;
     }
 
-    // Step 2: 选择科室
+    /* === 第2步: 选择科室 Step 2: Choose department === */
     result = select_department("选择科室", department_id);
     if (result != SUCCESS) {
         return result;
     }
 
-    // Step 3: 显示该科室下当天有排班的医生及其剩余预约号 (paginated)
+    /* === 第3步: 显示该科室下当天有排班的医生及剩余号 (分页)
+         Step 3: Show doctors with schedules on that date + remaining slots (paginated) === */
     ui_sub_header("可选医生 (当日有排班)");
     ui_info("日期", selected_date);
     printf("\n");
 
     dept_doctors = load_doctors_list();
     {
-        // first pass: count & compute (only doctors with schedule on selected date)
+        /* 第一遍:统计有排班的医生数及剩余名额 First pass: count doctors with schedules and compute remaining slots */
         int match = 0;
         DoctorNode *dd = dept_doctors;
         while (dd) {
@@ -244,10 +390,12 @@ static int patient_standard_register_menu(const User *current_user) {
             while (dd && idx < match) {
                 if (strcmp(dd->data.department_id, department_id) == 0 &&
                     has_doctor_schedule(dd->data.doctor_id, selected_date)) {
+                    /* 分别统计上午和下午的剩余名额(容量6人/时段)
+                       Compute remaining slots for morning and afternoon (capacity 6/slot) */
                     int mc = count_appointments_for_slot(dd->data.doctor_id, selected_date, "上午");
                     int ac = count_appointments_for_slot(dd->data.doctor_id, selected_date, "下午");
-                    int mr = APPOINTMENT_SLOTS_PER_HALF_DAY - mc; if (mr < 0) mr = 0;
-                    int ar = APPOINTMENT_SLOTS_PER_HALF_DAY - ac; if (ar < 0) ar = 0;
+                    int mr = APPOINTMENT_SLOTS_PER_HALF_DAY - mc; if (mr < 0) mr = 0;  /* 上午剩余 morning remaining */
+                    int ar = APPOINTMENT_SLOTS_PER_HALF_DAY - ac; if (ar < 0) ar = 0;  /* 下午剩余 afternoon remaining */
                     snprintf(db[idx], 80, "%-10s %-15s %-10s 上午%d 下午%d busy:%d",
                              dd->data.doctor_id, dd->data.name,
                              dd->data.title[0] ? dd->data.title : "未设置",
@@ -263,11 +411,12 @@ static int patient_standard_register_menu(const User *current_user) {
     free_doctor_list(dept_doctors);
 
     if (!has_doctors) {
-        ui_warn("该科室在所选日期暂无出诊医生。");
+        ui_warn("该科室在所选日期暂无出诊医生。");  /* No doctors available on selected date */
         return ERROR_NOT_FOUND;
     }
 
-    // Step 4: 选择医生 (by search, only with schedule)
+    /* === 第4步: 选择医生 (搜索式,仅限有排班的)
+         Step 4: Select doctor (searchable, only scheduled ones) === */
     {
         int match = 0;
         DoctorNode *dd;
@@ -297,13 +446,14 @@ static int patient_standard_register_menu(const User *current_user) {
         free((void*)di); free(db);
         if (sel < 0) { free_doctor_list(dept_doctors); return ERROR_INVALID_INPUT; }
 
+        /* 定位到选中的医生(只遍历有排班的医生) Navigate to selected doctor (only scheduled ones) */
         dd = dept_doctors;
         for (int j = 0; j < sel; j++) {
             while (dd && !(strcmp(dd->data.department_id, department_id) == 0 &&
                    has_doctor_schedule(dd->data.doctor_id, selected_date))) dd = dd->next;
             if (dd) dd = dd->next;
         }
-        // Go back to the selected one
+        /* 重新遍历到选中的目标 Re-navigate to the selected target */
         dd = dept_doctors;
         for (int j = 0; j <= sel; ) {
             if (strcmp(dd->data.department_id, department_id) == 0 &&
@@ -317,16 +467,19 @@ static int patient_standard_register_menu(const User *current_user) {
         free_doctor_list(dept_doctors);
     }
 
-    // Step 5: 选择时间段
+    /* === 第5步: 选择时间段 (7个时段,每小时一段)
+         Step 5: Choose time slot (7 hourly slots) === */
     ui_sub_header("选择时间段");
+    /* 7个时段: 上午4段(08:00-12:00) + 下午3段(14:00-17:00)
+       7 time slots: 4 morning (08:00-12:00) + 3 afternoon (14:00-17:00) */
     const char *slot_names[7] = {
         "08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00",
         "14:00-15:00", "15:00-16:00", "16:00-17:00"
     };
     for (int si = 0; si < 7; si++)
         ui_menu_item(si + 1, slot_names[si]);
-     
-     
+
+
     ui_divider();
     ui_menu_exit(0, "返回");
     int slot_choice = get_menu_choice(0, 7);
@@ -336,10 +489,11 @@ static int patient_standard_register_menu(const User *current_user) {
     if (slot_choice >= 1 && slot_choice <= 7)
             strcpy(time_slot, slot_names[slot_choice - 1]);
 
-    // 检查该时段是否还有剩余号
+    /* 容量检查:该时段预约人数是否已达上限(6人/段)
+       Capacity check: slot count must be < 6 */
     int current_count = count_appointments_for_slot(selected_doc.doctor_id, selected_date, time_slot);
     if (current_count >= APPOINTMENT_SLOTS_PER_HALF_DAY) {
-        ui_warn("该时段预约号已满，请选择其他时段。");
+        ui_warn("该时段预约号已满，请选择其他时段。");  /* Slot full, choose another */
         return ERROR_DUPLICATE;
     }
 
@@ -348,22 +502,25 @@ static int patient_standard_register_menu(const User *current_user) {
         return result;
     }
 
+    /* 冲突检测:避免同一患者重复挂同一医生+科室
+       Conflict check: prevent duplicate active registration for same patient-doctor-dept */
     if (has_registration_conflict(current_patient.patient_id, selected_doc.doctor_id, department_id)) {
-        ui_warn("您已存在该医生的有效预约或现场排队记录，请勿重复挂号。");
+        ui_warn("您已存在该医生的有效预约或现场排队记录，请勿重复挂号。");  /* Duplicate registration exists */
         return ERROR_DUPLICATE;
     }
 
-    // 确认并创建
+    /* 创建预约对象 Create appointment object */
     memset(&new_apt, 0, sizeof(new_apt));
-    generate_id(new_apt.appointment_id, MAX_ID, "APT");
+    generate_id(new_apt.appointment_id, MAX_ID, "APT");  /* 生成"APT"前缀的预约ID Generate APT-prefixed appointment ID */
     strcpy(new_apt.patient_id, current_patient.patient_id);
     strcpy(new_apt.doctor_id, selected_doc.doctor_id);
     strcpy(new_apt.department_id, department_id);
     strcpy(new_apt.appointment_date, selected_date);
     strcpy(new_apt.appointment_time, time_slot);
-    strcpy(new_apt.status, "已预约");
+    strcpy(new_apt.status, "已预约");  /* 初始状态: 已预约 Initial status: booked */
     get_current_time(new_apt.create_time, 30);
 
+    /* 追加到预约链表 Append to appointment linked list */
     apt_head = load_appointments_list();
     new_apt_node = create_appointment_node(&new_apt);
     if (!new_apt_node) {
@@ -388,6 +545,8 @@ static int patient_standard_register_menu(const User *current_user) {
         return result;
     }
 
+    /* 增加医生的繁忙度(新预约使医生更忙)
+       Increase doctor's busy level (new appointment makes doctor busier) */
     doctor_head = load_doctors_list();
     current_doc = doctor_head;
     while (current_doc) {
@@ -400,6 +559,7 @@ static int patient_standard_register_menu(const User *current_user) {
     save_doctors_list(doctor_head);
     free_doctor_list(doctor_head);
 
+    /* 显示挂号结果 Display registration result */
     printf("\n");
     ui_ok("预约挂号成功!");
     ui_divider();
@@ -414,6 +574,26 @@ static int patient_standard_register_menu(const User *current_user) {
     return SUCCESS;
 }
 
+/* ============================================================================
+ * 现场挂号 (Onsite Registration — Same-Day Walk-In)
+ * ============================================================================
+ * 当日现场挂号流程:
+ *   第1步: 选择科室
+ *   第2步: 显示该科室今日有排班的医生及剩余现场名额(8人/天),分页浏览
+ *   第3步: 从有排班的医生中选择一位
+ *   确认: 冲突检测 -> 分配排队号(系统自动递增) -> 入队(急诊优先插队) -> 增加繁忙度
+ *   急诊: 检查床位可用性,提示入院时优先分配
+ *
+ * Same-day onsite registration flow:
+ *   Step 1: Choose department
+ *   Step 2: Show doctors with today's schedule + remaining slots (8/day), paginated
+ *   Step 3: Select a doctor from scheduled doctors
+ *   Confirmation: conflict check -> assign queue number (auto-increment) -> enqueue (emergency priority)
+ *               -> increase busy level
+ *   Emergency: check bed availability, hint about priority assignment on admission
+ * ============================================================================
+ */
+
 static int patient_onsite_register_menu(const User *current_user) {
     char department_id[MAX_ID];
     Doctor selected_doc;
@@ -426,15 +606,15 @@ static int patient_onsite_register_menu(const User *current_user) {
 
     printf("\n");
     ui_header("现场挂号 (今日)");
-    printf(C_DIM "  提示: 现场挂号仅限当天，挂号后自动进入候诊队列。" C_RESET "\n\n");
+    printf(C_DIM "  提示: 现场挂号仅限当天，挂号后自动进入候诊队列。" C_RESET "\n\n");  /* Same-day only, auto-queued */
 
-    // Step 1: 选择科室
+    /* === 第1步: 选择科室 Step 1: Choose department === */
     result = select_department("今日可选科室", department_id);
     if (result != SUCCESS) {
         return result;
     }
 
-    // Get today's date for schedule checking
+    /* 获取今日日期用于排班检查 Get today's date for schedule checking */
     char today_str[12];
     {
         time_t now = time(NULL);
@@ -442,7 +622,8 @@ static int patient_onsite_register_menu(const User *current_user) {
         strftime(today_str, sizeof(today_str), "%Y-%m-%d", tm_info);
     }
 
-    // Step 2: 显示该科室下今日有排班的医生及其剩余现场号 (paginated)
+    /* === 第2步: 显示今日有排班的医生及剩余现场号
+         Step 2: Show doctors with today's schedule + remaining onsite slots === */
     ui_sub_header("今日值班医生 (有排班)");
 
     dept_doctors = load_doctors_list();
@@ -462,8 +643,8 @@ static int patient_onsite_register_menu(const User *current_user) {
             while (dd && idx < match) {
                 if (strcmp(dd->data.department_id, department_id) == 0 &&
                     has_doctor_schedule(dd->data.doctor_id, today_str)) {
-                    int oc = count_onsite_today(dd->data.doctor_id);
-                    int or_ = ONSITE_SLOTS_PER_DAY - oc;
+                    int oc = count_onsite_today(dd->data.doctor_id);  /* 已占用的现场号 Used onsite slots */
+                    int or_ = ONSITE_SLOTS_PER_DAY - oc;              /* 剩余现场号 Remaining onsite slots */
                     if (or_ < 0) or_ = 0;
                     snprintf(db[idx], 80, "%-10s %-15s %-10s 余%d 排%d busy:%d",
                              dd->data.doctor_id, dd->data.name,
@@ -480,11 +661,12 @@ static int patient_onsite_register_menu(const User *current_user) {
     free_doctor_list(dept_doctors);
 
     if (!has_doctors) {
-        ui_warn("该科室今日无出诊医生。");
+        ui_warn("该科室今日无出诊医生。");  /* No doctors on duty today */
         return ERROR_NOT_FOUND;
     }
 
-    // Step 3: 选择医生 (by search, only with schedule)
+    /* === 第3步: 选择医生 (搜索式,仅限有排班的)
+         Step 3: Select doctor (searchable, only scheduled ones) === */
     {
         int match = 0;
         DoctorNode *dd;
@@ -532,20 +714,25 @@ static int patient_onsite_register_menu(const User *current_user) {
         return result;
     }
 
+    /* 冲突检测:避免同一患者重复挂同一医生+科室
+       Conflict check: prevent duplicate active registration */
     if (has_registration_conflict(current_patient.patient_id, selected_doc.doctor_id, department_id)) {
         ui_warn("您已存在该医生的有效预约或现场排队记录，请勿重复挂号。");
         return ERROR_DUPLICATE;
     }
 
+    /* 创建现场挂号对象 Create onsite registration object */
     memset(&registration, 0, sizeof(registration));
-    generate_id(registration.onsite_id, MAX_ID, "OS");
+    generate_id(registration.onsite_id, MAX_ID, "OS");  /* 生成"OS"前缀的现场号ID */
     strcpy(registration.patient_id, current_patient.patient_id);
     strcpy(registration.doctor_id, selected_doc.doctor_id);
     strcpy(registration.department_id, department_id);
+    /* 获取下一个排队号(系统自动分配,按医生+科室递增) Get next queue number (auto-increment per doctor+dept) */
     registration.queue_number = get_next_onsite_queue_number(selected_doc.doctor_id, department_id);
-    strcpy(registration.status, "排队中");
+    strcpy(registration.status, "排队中");  /* 初始状态: 排队中 Initial status: queued */
     get_current_time(registration.create_time, 30);
 
+    /* 入队:急诊患者会自动插入队列前部(优先) Enqueue: emergency patients auto-inserted at front (priority) */
     queue = load_onsite_registration_queue();
     result = enqueue_onsite_registration(&queue, &registration, current_patient.is_emergency);
     if (result != SUCCESS) {
@@ -560,6 +747,7 @@ static int patient_onsite_register_menu(const User *current_user) {
         return result;
     }
 
+    /* 增加医生繁忙度 Increase doctor busy level */
     {
         DoctorNode *doctor_head = load_doctors_list();
         DoctorNode *current_doc = doctor_head;
@@ -573,7 +761,8 @@ static int patient_onsite_register_menu(const User *current_user) {
         save_doctors_list(doctor_head);
         free_doctor_list(doctor_head);
 
-        // Emergency patients: check bed availability, defer actual assignment to admission
+        /* 急诊患者:检查是否有可用床位(提示,不实际分配)
+           Emergency patients: check bed availability (hint only, actual assignment deferred to admission) */
         if (current_patient.is_emergency) {
             WardNode *ward_head = load_wards_list();
             WardNode *ward_node = ward_head;
@@ -586,14 +775,15 @@ static int patient_onsite_register_menu(const User *current_user) {
                 ward_node = ward_node->next;
             }
             if (has_bed) {
-                printf(C_YELLOW "  ⚠ 急诊患者，入院时将优先分配床位。\n" C_RESET);
+                printf(C_YELLOW "  ⚠ 急诊患者，入院时将优先分配床位。\n" C_RESET);  /* Bed available, priority on admission */
             } else {
-                printf(C_RED "  ⚠ 急诊患者，但暂无可用床位!\n" C_RESET);
+                printf(C_RED "  ⚠ 急诊患者，但暂无可用床位!\n" C_RESET);            /* No beds available */
             }
             free_ward_list(ward_head);
         }
     }
 
+    /* 显示挂号结果 Display registration result */
     printf("\n");
     ui_ok("现场挂号成功，已进入候诊队列!");
     ui_divider();
@@ -604,13 +794,25 @@ static int patient_onsite_register_menu(const User *current_user) {
     {
         char qno[16];
         snprintf(qno, sizeof(qno), "%d", registration.queue_number);
-        ui_info("当前排队号", qno);
+        ui_info("当前排队号", qno);  /* Queue number */
     }
     ui_info("状态", registration.status);
 
     return SUCCESS;
 }
 
+/* ============================================================================
+ * 公共展示函数 (Public Display Functions)
+ * ============================================================================
+ * 供外部模块调用的科室和医生展示函数。
+ * Department and doctor display functions callable by external modules.
+ * ============================================================================
+ */
+
+/**
+ * show_available_departments — 分页展示所有可选科室
+ *                              Paginated display of all available departments
+ */
 void show_available_departments(void) {
     DepartmentNode *head = load_departments_list();
     int count = count_department_list(head);
@@ -637,10 +839,14 @@ void show_available_departments(void) {
     free_department_list(head);
 }
 
+/**
+ * show_doctors_by_department — 按科室展示医生列表(分页)
+ *                              Paginated display of doctors filtered by department
+ */
 void show_doctors_by_department(const char *department_id) {
     DoctorNode *head = load_doctors_list();
 
-    // first pass: count matching
+    /* 第一遍:统计该科室的医生数 First pass: count matching doctors */
     int match = 0;
     DoctorNode *cur = head;
     while (cur) {
@@ -649,7 +855,7 @@ void show_doctors_by_department(const char *department_id) {
     }
 
     if (match == 0) {
-        ui_warn("该科室暂无医生。");
+        ui_warn("该科室暂无医生。");  /* No doctors in this department */
         free_doctor_list(head);
         return;
     }
@@ -674,27 +880,44 @@ void show_doctors_by_department(const char *department_id) {
     free_doctor_list(head);
 }
 
+/* ============================================================================
+ * 患者主菜单 (Patient Main Menu)
+ * ============================================================================
+ * 定义患者角色的7大功能入口。
+ * Defines the 7 function entry points for the patient role.
+ * ============================================================================
+ */
+
 void patient_main_menu(const User *current_user) {
     (void)current_user;
-    ui_menu_item(1, "挂号就诊");
-    ui_menu_item(2, "挂号状态查询");
-    ui_menu_item(3, "诊断结果查询");
-    ui_menu_item(4, "住院信息查看");
-    ui_menu_item(5, "治疗进度查看");
-    ui_menu_item(6, "修改个人信息");
-    ui_menu_item(7, "修改密码");
+    ui_menu_item(1, "挂号就诊");              /* Registration */
+    ui_menu_item(2, "挂号状态查询");          /* Registration status query */
+    ui_menu_item(3, "诊断结果查询");          /* Diagnosis query */
+    ui_menu_item(4, "住院信息查看");          /* Ward information */
+    ui_menu_item(5, "治疗进度查看");          /* Treatment progress */
+    ui_menu_item(6, "修改个人信息");          /* Edit personal info */
+    ui_menu_item(7, "修改密码");              /* Change password */
 }
+
+/* ============================================================================
+ * 功能1: 挂号功能入口 (Registration Menu Entry)
+ * ============================================================================
+ * 二级菜单: 预约挂号 vs 现场挂号。
+ * Sub-menu: Appointment Booking vs Onsite Registration.
+ * ============================================================================
+ */
 
 int patient_register_menu(const User *current_user) {
     ui_header("挂号功能");
 
+    /* 确保患者档案存在 Ensure patient profile exists */
     if (ensure_patient_profile(current_user->username) != SUCCESS) {
         ui_err("患者信息初始化失败!");
         return ERROR_FILE_IO;
     }
 
-    ui_menu_item(1, "预约挂号 (可提前7天预约)");
-    ui_menu_item(2, "现场挂号 (当日排队)");
+    ui_menu_item(1, "预约挂号 (可提前7天预约)");   /* Appointment (7-day advance booking) */
+    ui_menu_item(2, "现场挂号 (当日排队)");        /* Onsite (same-day queue) */
     ui_divider();
     ui_menu_exit(0, "返回");
 
@@ -710,6 +933,21 @@ int patient_register_menu(const User *current_user) {
             return ERROR_INVALID_INPUT;
     }
 }
+
+/* ============================================================================
+ * 功能2: 挂号状态查询与取消 (Appointment Status Query & Cancellation)
+ * ============================================================================
+ * 显示当前患者的所有预约和现场挂号记录:
+ *   - 预约记录: 含"可取消"标记(仅"已预约"状态可取消)
+ *   - 现场记录: 含"可退号"标记(仅"排队中"状态可退号)和排队位置(前面人数)
+ * 输入单号可取消预约或退号,同步恢复医生繁忙度(busy_level--)。
+ *
+ * Display all appointment and onsite records for the current patient:
+ *   - Appointment records: "可取消" tag (only "已预约" can be cancelled)
+ *   - Onsite records: "可退号" tag (only "排队中" can be withdrawn) + queue position
+ * Input an ID to cancel or withdraw, with doctor busy_level-- on success.
+ * ============================================================================
+ */
 
 int patient_appointment_menu(const User *current_user) {
     PatientNode *patient_head = NULL;
@@ -731,6 +969,7 @@ int patient_appointment_menu(const User *current_user) {
         return ERROR_FILE_IO;
     }
 
+    /* 查找当前患者 Find current patient by username */
     patient_head = load_patients_list();
     current_patient_node = patient_head;
     while (current_patient_node) {
@@ -754,7 +993,7 @@ int patient_appointment_menu(const User *current_user) {
     apt_head = load_appointments_list();
     onsite_queue = load_onsite_registration_queue();
 
-    // ----- 预约挂号记录 (paginated) -----
+    /* ===== 预约挂号记录 (分页) Appointment records (paginated) ===== */
     {
         int match = 0;
         AppointmentNode *ap = apt_head;
@@ -771,6 +1010,7 @@ int patient_appointment_menu(const User *current_user) {
                 if (strcmp(ap->data.patient_id, patient_id_copy) == 0) {
                     char dn[MAX_NAME];
                     print_doctor_name_by_id(ap->data.doctor_id, dn, sizeof(dn));
+                    /* 仅"已预约"状态显示[可取消]标记 Only "已预约" shows [可取消] tag */
                     const char *act = (strcmp(ap->data.status, "已预约") == 0) ? " [可取消]" : " -";
                     snprintf(ab[idx], 90, "%-16s %-12s %-8s %-12s %-10s%s",
                              ap->data.appointment_id, ap->data.appointment_date,
@@ -784,7 +1024,8 @@ int patient_appointment_menu(const User *current_user) {
         }
     }
 
-    // ----- 现场挂号记录 (paginated) with queue position -----
+    /* ===== 现场挂号记录 (分页,含排队位置) =====
+             Onsite registration records (paginated, with queue position) */
     {
         int match = 0;
         OnsiteRegistrationNode *on = onsite_queue.front;
@@ -803,9 +1044,11 @@ int patient_appointment_menu(const User *current_user) {
                     char qno[10];
                     print_doctor_name_by_id(on->data.doctor_id, dn, sizeof(dn));
                     snprintf(qno, sizeof(qno), "%d", on->data.queue_number);
+                    /* 仅"排队中"状态显示[可退号]标记 Only "排队中" shows [可退号] tag */
                     const char *act = (strcmp(on->data.status, "排队中") == 0) ? " [可退号]" : " -";
 
-                    // Calculate queue position: how many pending before this patient
+                    /* 计算排队位置:前面还有多少人在等待(同一医生+科室+排队中且号码更小)
+                       Calculate queue position: how many patients ahead (same doctor+dept, queued, smaller number) */
                     char pos_str[20] = "";
                     if (strcmp(on->data.status, "排队中") == 0) {
                         int ahead = 0;
@@ -819,7 +1062,7 @@ int patient_appointment_menu(const User *current_user) {
                             }
                             tmp = tmp->next;
                         }
-                        snprintf(pos_str, sizeof(pos_str), "前面%d人", ahead);
+                        snprintf(pos_str, sizeof(pos_str), "前面%d人", ahead);  /* N people ahead */
                     }
 
                     snprintf(ob[idx], 110, "%-16s %-12s %-10s %-10s %-8s%s",
@@ -834,10 +1077,10 @@ int patient_appointment_menu(const User *current_user) {
     }
 
     if (found == 0) {
-        ui_warn("暂无挂号记录。");
+        ui_warn("暂无挂号记录。");  /* No registration records */
     }
 
-    // ----- 取消/退号 -----
+    /* ===== 取消/退号操作 Cancellation / Withdrawal ===== */
     printf("\n" S_LABEL "  输入单号可取消预约或现场退号，输入0返回: " C_RESET);
     if (fgets(cancel_id, sizeof(cancel_id), stdin) == NULL) {
         free_appointment_list(apt_head);
@@ -847,12 +1090,14 @@ int patient_appointment_menu(const User *current_user) {
     cancel_id[strcspn(cancel_id, "\n")] = 0;
 
     if (strcmp(cancel_id, "0") != 0 && cancel_id[0] != '\0') {
-        // 先在预约列表中查找
+        /* 先在预约列表中查找 First search in appointment list */
         current_apt = apt_head;
         while (current_apt) {
             if (strcmp(current_apt->data.appointment_id, cancel_id) == 0 &&
                 strcmp(current_apt->data.patient_id, patient_id_copy) == 0) {
                 if (strcmp(current_apt->data.status, "已预约") == 0) {
+                    /* 取消预约:状态设为"已取消",恢复医生繁忙度
+                       Cancel appointment: set status to "已取消", restore doctor busy level */
                     strcpy(current_apt->data.status, "已取消");
                     save_appointments_list(apt_head);
                     {
@@ -860,7 +1105,7 @@ int patient_appointment_menu(const User *current_user) {
                         DoctorNode *dcur = dhead;
                         while (dcur) {
                             if (strcmp(dcur->data.doctor_id, current_apt->data.doctor_id) == 0) {
-                                if (dcur->data.busy_level > 0) dcur->data.busy_level--;
+                                if (dcur->data.busy_level > 0) dcur->data.busy_level--;  /* 恢复繁忙度 Restore busy level */
                                 break;
                             }
                             dcur = dcur->next;
@@ -868,10 +1113,10 @@ int patient_appointment_menu(const User *current_user) {
                         save_doctors_list(dhead);
                         free_doctor_list(dhead);
                     }
-                    ui_ok("预约已取消。");
+                    ui_ok("预约已取消。");  /* Appointment cancelled */
                     cancelled = 1;
                 } else {
-                    ui_warn("该预约当前状态无法取消。");
+                    ui_warn("该预约当前状态无法取消。");  /* Cannot cancel in current status */
                     cancelled = 1;
                 }
                 break;
@@ -880,12 +1125,14 @@ int patient_appointment_menu(const User *current_user) {
         }
 
         if (!cancelled) {
-            // 在现场队列中查找
+            /* 再在现场队列中查找 Then search in onsite queue */
             current_onsite = onsite_queue.front;
             while (current_onsite) {
                 if (strcmp(current_onsite->data.onsite_id, cancel_id) == 0 &&
                     strcmp(current_onsite->data.patient_id, patient_id_copy) == 0) {
                     if (strcmp(current_onsite->data.status, "排队中") == 0) {
+                        /* 退号:状态设为"已退号",恢复医生繁忙度
+                           Withdraw: set status to "已退号", restore doctor busy level */
                         strcpy(current_onsite->data.status, "已退号");
                         save_onsite_registration_queue(&onsite_queue);
                         {
@@ -901,10 +1148,10 @@ int patient_appointment_menu(const User *current_user) {
                             save_doctors_list(dhead);
                             free_doctor_list(dhead);
                         }
-                        ui_ok("现场挂号已退号。");
+                        ui_ok("现场挂号已退号。");  /* Onsite registration withdrawn */
                         cancelled = 1;
                     } else {
-                        ui_warn("该现场挂号当前状态无法退号。");
+                        ui_warn("该现场挂号当前状态无法退号。");  /* Cannot withdraw in current status */
                         cancelled = 1;
                     }
                     break;
@@ -914,7 +1161,7 @@ int patient_appointment_menu(const User *current_user) {
         }
 
         if (!cancelled) {
-            ui_err("未找到该单号，或该单号不属于当前患者。");
+            ui_err("未找到该单号，或该单号不属于当前患者。");  /* ID not found or doesn't belong to current patient */
         }
     }
 
@@ -922,6 +1169,18 @@ int patient_appointment_menu(const User *current_user) {
     free_onsite_registration_queue(&onsite_queue);
     return SUCCESS;
 }
+
+/* ============================================================================
+ * 功能3: 诊断结果查询 (Diagnosis Query)
+ * ============================================================================
+ * 显示当前患者的所有病历记录(分页):
+ *   - 选择一条记录可查看诊断详情(诊断结果/日期/状态)
+ *   - 同时显示关联的处方摘要(药品名/数量/金额)
+ * Display all medical records for the current patient (paginated):
+ *   - Select a record to view diagnosis details
+ *   - Also show linked prescription summary (drug name / quantity / cost)
+ * ============================================================================
+ */
 
 int patient_query_diagnosis_menu(const User *current_user) {
     PatientNode *patient_head = NULL;
@@ -938,6 +1197,7 @@ int patient_query_diagnosis_menu(const User *current_user) {
         return ERROR_FILE_IO;
     }
 
+    /* 查找当前患者 Find current patient */
     patient_head = load_patients_list();
     current_patient_node = patient_head;
     while (current_patient_node) {
@@ -958,7 +1218,7 @@ int patient_query_diagnosis_menu(const User *current_user) {
 
     record_head = load_medical_records_list();
 
-    // paginated: 诊断记录
+    /* ===== 诊断记录列表 (分页) Diagnosis records (paginated) ===== */
     {
         int match = 0;
         MedicalRecordNode *mr = record_head;
@@ -986,9 +1246,9 @@ int patient_query_diagnosis_menu(const User *current_user) {
     }
 
     if (found == 0) {
-        ui_warn("暂无诊断记录。");
+        ui_warn("暂无诊断记录。");  /* No diagnosis records */
     } else {
-        // Build record list for selection
+        /* 构建病历列表用于选择详情 Build record list for detail selection */
         int match = 0;
         MedicalRecordNode *mr;
         mr = record_head;
@@ -1015,32 +1275,35 @@ int patient_query_diagnosis_menu(const User *current_user) {
             int sel = ui_search_list("选择记录查看详情", ri, match);
             free((void*)ri); free(rb);
             if (sel >= 0) {
+                /* 定位到选中的病历 Navigate to selected record */
                 mr = record_head;
                 for (int j = 0; j < sel; j++) mr = mr->next;
                 PrescriptionNode *prescription_head = load_prescriptions_list();
                 PrescriptionNode *current_prescription = prescription_head;
                 int prescription_found = 0;
 
+                /* 显示诊断详情 Display diagnosis details */
                 ui_sub_header("诊断详情");
                 ui_info("诊断结果", mr->data.diagnosis);
                 ui_info("诊断日期", mr->data.diagnosis_date);
                 ui_info("治疗状态", mr->data.status);
-                ui_sub_header("处方摘要");
+                ui_sub_header("处方摘要");  /* Prescription summary */
 
+                /* 遍历该病历下的所有处方 Display all prescriptions under this record */
                 while (current_prescription) {
                     if (strcmp(current_prescription->data.record_id, mr->data.record_id) == 0) {
                         Drug *drug = find_drug_by_id(current_prescription->data.drug_id);
                         printf("  ");
                         printf(S_LABEL);
-                        printf("药品: ");
+                        printf("药品: ");  /* Drug */
                         printf(C_RESET);
                         ui_print_col(drug ? drug->name : current_prescription->data.drug_id, 15);
                         printf(S_LABEL);
-                        printf("  数量: ");
+                        printf("  数量: ");  /* Quantity */
                         printf(C_RESET);
                         ui_print_col_int(current_prescription->data.quantity, 6);
                         printf(S_LABEL);
-                        printf("  金额: ");
+                        printf("  金额: ");  /* Amount */
                         printf(C_RESET);
                         printf("%.2f\n", current_prescription->data.total_price);
                         if (drug) {
@@ -1052,7 +1315,7 @@ int patient_query_diagnosis_menu(const User *current_user) {
                 }
 
                 if (!prescription_found) {
-                    printf("  " C_DIM "暂无处方记录。" C_RESET "\n");
+                    printf("  " C_DIM "暂无处方记录。" C_RESET "\n");  /* No prescription records */
                 }
 
                 free_prescription_list(prescription_head);
@@ -1064,6 +1327,14 @@ int patient_query_diagnosis_menu(const User *current_user) {
     return SUCCESS;
 }
 
+/* ============================================================================
+ * 功能4: 住院信息查看 (Ward Information)
+ * ============================================================================
+ * 分页展示所有病房的基本信息(编号/类型/总床位/剩余床位/预警值)。
+ * Paginated display of all ward information (ID / type / total beds / remaining / warning line).
+ * ============================================================================
+ */
+
 int patient_view_ward_menu(const User *current_user) {
     WardNode *ward_head = NULL;
     (void)current_user;
@@ -1072,7 +1343,7 @@ int patient_view_ward_menu(const User *current_user) {
 
     ward_head = load_wards_list();
     if (!ward_head) {
-        ui_warn("暂无病房信息。");
+        ui_warn("暂无病房信息。");  /* No ward information */
         return SUCCESS;
     }
 
@@ -1097,6 +1368,14 @@ int patient_view_ward_menu(const User *current_user) {
     free_ward_list(ward_head);
     return SUCCESS;
 }
+
+/* ============================================================================
+ * 功能5: 治疗进度查看 (Treatment Progress)
+ * ============================================================================
+ * 显示当前患者的治疗阶段和基本信息。
+ * Display the current patient's treatment stage and basic info.
+ * ============================================================================
+ */
 
 int patient_view_treatment_progress_menu(const User *current_user) {
     PatientNode *patient_head = NULL;
@@ -1132,15 +1411,25 @@ int patient_view_treatment_progress_menu(const User *current_user) {
     if (patient_found) {
         ui_divider();
         ui_info("患者", name_copy);
-        ui_info("当前治疗阶段", stage_copy);
-        ui_info("紧急状态", emergency ? "是" : "否");
-        ui_info("患者类型", type_copy);
+        ui_info("当前治疗阶段", stage_copy);              /* Current treatment stage */
+        ui_info("紧急状态", emergency ? "是" : "否");     /* Emergency status */
+        ui_info("患者类型", type_copy);                   /* Patient type */
     } else {
         ui_err("患者信息不存在!");
     }
 
     return SUCCESS;
 }
+
+/* ============================================================================
+ * 功能6: 修改个人信息 (Edit Profile)
+ * ============================================================================
+ * 患者编辑自己的姓名/性别/年龄(0-150)/电话(7-15位数字)/地址/患者类型。
+ * 患者类型(普通/医保/军人)有校验,非法则重置为"普通"。
+ * Patient can edit own name/gender/age(0-150)/phone(7-15 digits)/address/patient type.
+ * Patient type (普通/医保/军人) is validated; invalid input resets to "普通".
+ * ============================================================================
+ */
 
 int patient_edit_profile_menu(const User *current_user) {
     PatientNode *patient_head = NULL;
@@ -1174,6 +1463,7 @@ int patient_edit_profile_menu(const User *current_user) {
     }
 
     p = &current_patient_node->data;
+    /* 显示当前信息 Display current profile */
     printf("\n");
     ui_sub_header("当前信息");
     ui_info("姓名", p->name);
@@ -1187,13 +1477,14 @@ int patient_edit_profile_menu(const User *current_user) {
     ui_info("地址", p->address);
     ui_info("患者类型", p->patient_type);
 
+    /* 可编辑字段菜单 Editable field menu */
     ui_divider();
     ui_menu_item(1, "姓名");
     ui_menu_item(2, "性别");
     ui_menu_item(3, "年龄");
     ui_menu_item(4, "电话");
     ui_menu_item(5, "地址");
-    ui_menu_item(6, "患者类型 (普通/医保/军人)");
+    ui_menu_item(6, "患者类型 (普通/医保/军人)");  /* Patient type: normal/insurance/military */
     ui_menu_exit(0, "返回");
 
     choice = get_menu_choice(0, 6);
@@ -1215,6 +1506,7 @@ int patient_edit_profile_menu(const User *current_user) {
             {
                 int new_age;
                 if (scanf("%d", &new_age) == 1) {
+                    /* 年龄校验:必须在0-150之间 Age validation: must be 0-150 */
                     if (is_valid_age(new_age)) {
                         p->age = new_age;
                     } else {
@@ -1231,6 +1523,7 @@ int patient_edit_profile_menu(const User *current_user) {
             printf(S_LABEL "  请输入新电话(7-15位数字): " C_RESET);
             if (fgets(p->phone, sizeof(p->phone), stdin)) {
                 p->phone[strcspn(p->phone, "\n")] = 0;
+                /* 电话校验:必须7-15位纯数字 Phone validation: 7-15 pure digits */
                 if (p->phone[0] != '\0' && !is_valid_phone(p->phone)) {
                     ui_err("电话号码无效! 需要7-15位纯数字。");
                     free_patient_list(patient_head);
@@ -1249,6 +1542,8 @@ int patient_edit_profile_menu(const User *current_user) {
             if (fgets(p->patient_type, sizeof(p->patient_type), stdin)) {
                 p->patient_type[strcspn(p->patient_type, "\n")] = 0;
             }
+            /* 患者类型校验:必须是"普通"/"医保"/"军人"之一,否则重置为"普通"
+               Patient type validation: must be one of the three, otherwise reset to "普通" */
             if (strcmp(p->patient_type, "普通") != 0 &&
                 strcmp(p->patient_type, "医保") != 0 &&
                 strcmp(p->patient_type, "军人") != 0) {
@@ -1265,7 +1560,7 @@ int patient_edit_profile_menu(const User *current_user) {
     free_patient_list(patient_head);
 
     if (result == SUCCESS) {
-        ui_ok("个人信息更新成功!");
+        ui_ok("个人信息更新成功!");  /* Profile updated successfully */
     }
 
     return result;
