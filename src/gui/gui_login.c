@@ -296,7 +296,9 @@ INT_PTR CALLBACK LoginDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
         return TRUE;
 
     case WM_CLOSE:
-        g_loginResultCode = ERROR_INVALID_INPUT;
+        /* 仅在非成功状态下才标记为取消 / Only mark as cancel if not already successful */
+        if (g_loginResultCode != SUCCESS)
+            g_loginResultCode = ERROR_INVALID_INPUT;
         DestroyWindow(hDlg);
         return TRUE;
 
