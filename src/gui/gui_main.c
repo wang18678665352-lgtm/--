@@ -102,14 +102,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         ensure_patient_profile("patient1");
     } else {
         migrate_user_passwords();
-        UserNode *cur = head;
-        while (cur) {
-            if (strcmp(cur->data.role, ROLE_PATIENT) == 0)
-                ensure_patient_profile(cur->data.username);
-            else if (strcmp(cur->data.role, ROLE_DOCTOR) == 0)
-                ensure_doctor_profile(cur->data.username);
-            cur = cur->next;
-        }
+
         /* 确保默认账号始终存在 / Ensure default accounts always exist */
         {
             const char *defUsers[3] = { "admin", "doctor1", "patient1" };
@@ -136,16 +129,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     UserNode *node = create_user_node(&defU);
                     if (node) {
                         node->next = head;
-                        head = node;  /* 更新 head 以便后续添加其他默认用户 */
+                        head = node;
                         save_users_list(head);
                     }
-                    if (strcmp(defRoles[i], ROLE_DOCTOR) == 0)
-                        ensure_doctor_profile(defUsers[i]);
-                    else if (strcmp(defRoles[i], ROLE_PATIENT) == 0)
-                        ensure_patient_profile(defUsers[i]);
                 }
             }
         }
+
+        /* 批量确保档案存在: 每个文件只加载一次，检查所有用户
+           Batch ensure profiles: load each file once, check all users */
+        batch_ensure_doctor_profiles(head);
+        batch_ensure_patient_profiles(head);
+
         free_user_list(head);
     }
     migrate_doctor_ids();       /* 迁移旧格式医生 ID */

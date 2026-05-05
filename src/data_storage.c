@@ -2303,6 +2303,90 @@ int ensure_doctor_profile(const char *username) {
     return result;
 }
 
+/* 批量确保医生档案: 一次加载数据，检查所有医生用户，追加缺失项
+   Batch ensure doctor profiles: load once, check all doc users, append missing */
+void batch_ensure_doctor_profiles(UserNode *user_list) {
+    DoctorNode *head = load_doctors_list();
+
+    int changed = 0;
+    for (UserNode *u = user_list; u; u = u->next) {
+        if (strcmp(u->data.role, ROLE_DOCTOR) != 0)
+            continue;
+
+        int found = 0;
+        for (DoctorNode *d = head; d; d = d->next) {
+            if (strcmp(d->data.username, u->data.username) == 0) {
+                found = 1; break;
+            }
+        }
+        if (found) continue;
+
+        Doctor new_doctor = {0};
+        generate_doctor_id("", new_doctor.doctor_id, MAX_ID);
+        strcpy(new_doctor.username, u->data.username);
+        strcpy(new_doctor.name, u->data.username);
+        strcpy(new_doctor.title, "医生");
+
+        DoctorNode *node = create_doctor_node(&new_doctor);
+        if (!node) continue;
+
+        if (!head) {
+            head = node;
+        } else {
+            DoctorNode *tail = head;
+            while (tail->next) tail = tail->next;
+            tail->next = node;
+        }
+        changed = 1;
+    }
+
+    if (changed && head) save_doctors_list(head);
+    if (head) free_doctor_list(head);
+}
+
+/* 批量确保患者档案 / Batch ensure patient profiles */
+void batch_ensure_patient_profiles(UserNode *user_list) {
+    PatientNode *head = load_patients_list();
+
+    int changed = 0;
+    for (UserNode *u = user_list; u; u = u->next) {
+        if (strcmp(u->data.role, ROLE_PATIENT) != 0)
+            continue;
+
+        int found = 0;
+        for (PatientNode *p = head; p; p = p->next) {
+            if (strcmp(p->data.username, u->data.username) == 0) {
+                found = 1; break;
+            }
+        }
+        if (found) continue;
+
+        Patient new_patient = {0};
+        generate_id(new_patient.patient_id, MAX_ID, "P");
+        strcpy(new_patient.username, u->data.username);
+        strcpy(new_patient.name, u->data.username);
+        strcpy(new_patient.gender, "未知");
+        strcpy(new_patient.patient_type, "普通");
+        strcpy(new_patient.treatment_stage, "初诊");
+        new_patient.is_emergency = false;
+
+        PatientNode *node = create_patient_node(&new_patient);
+        if (!node) continue;
+
+        if (!head) {
+            head = node;
+        } else {
+            PatientNode *tail = head;
+            while (tail->next) tail = tail->next;
+            tail->next = node;
+        }
+        changed = 1;
+    }
+
+    if (changed && head) save_patients_list(head);
+    if (head) free_patient_list(head);
+}
+
 /*
  * [中文] 创建带详细信息的医生档案（用户名、姓名、职称、科室）
  * [English] Create doctor profile with detailed info (username, name, title, department)
