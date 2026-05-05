@@ -191,21 +191,24 @@ int ShowLoginDialog(HINSTANCE hInst, HWND hParent, User *user) {
                  (sh - (rc.bottom - rc.top)) / 2, 0, 0,
                  SWP_NOSIZE | SWP_NOZORDER);
 
-    /* 模态消息循环: 禁用父窗口，循环直到设置结果码
-       Modal message loop: disable parent, loop until result code is set */
+    /* 模态消息循环: 禁用父窗口，直到对话框被销毁或结果码变更
+       Modal message loop: disable parent, loop until dialog destroyed or result set */
     EnableWindow(hParent, FALSE);
     MSG msg;
-    while (g_loginResultCode == ERROR_INVALID_INPUT &&
-           GetMessage(&msg, NULL, 0, 0)) {
-        if (!IsDialogMessage(hDlg, &msg)) {
+    BOOL closed = FALSE;
+    while (!closed && GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsWindow(hDlg) || !IsDialogMessage(hDlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
+        if (!IsWindow(hDlg)) closed = TRUE;  /* 对话框已销毁 / dialog destroyed */
     }
 
-    EnableWindow(hParent, TRUE);
-    SetForegroundWindow(hParent);
-    DestroyWindow(hDlg);
+    if (IsWindow(hParent)) {
+        EnableWindow(hParent, TRUE);
+        SetForegroundWindow(hParent);
+    }
+    if (IsWindow(hDlg)) DestroyWindow(hDlg);
 
     if (g_loginResultCode == SUCCESS && user) {
         *user = g_loginResult;
@@ -293,6 +296,7 @@ INT_PTR CALLBACK LoginDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
         return TRUE;
 
     case WM_CLOSE:
+        g_loginResultCode = ERROR_INVALID_INPUT;
         DestroyWindow(hDlg);
         return TRUE;
 

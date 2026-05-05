@@ -129,6 +129,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
     g_currentUser = loggedUser;
 
+    /* 登录成功 → 显示主窗口 / Login successful → show main window */
+    ShowWindow(g_hMainWnd, nCmdShow);
+    UpdateWindow(g_hMainWnd);
+
     /* 按角色填充导航树 / Populate nav tree for the logged-in role */
     PopulateNavTree();
 
@@ -158,8 +162,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 /* ==================  初始化主窗口 / Initialize Main Window ================== */
 
-/* 注册窗口类 → 创建主窗口 → 显示
-   Register window class → create → show */
+/* 注册窗口类 → 创建主窗口 (初始隐藏, 登录成功后才显示)
+   Register window class → create → initially hidden, shown after successful login */
 static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
     const char CLASS_NAME[] = "EMSMainWindow";
 
@@ -186,8 +190,9 @@ static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow) {
         return FALSE;
 
     g_hMainWnd = hWnd;
-    ShowWindow(hWnd, nCmdShow);
-    UpdateWindow(hWnd);
+    /* 初始隐藏主窗口，登录成功后再显示
+       Keep main window hidden until successful login */
+    (void)nCmdShow;
     return TRUE;
 }
 
@@ -500,6 +505,10 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
            Only refresh if viewId matches current (prevents race condition) */
         if ((int)wParam == g_currentView)
             SwitchView(hWnd, (int)wParam);
+        return 0;
+
+    case WM_CLOSE:
+        DestroyWindow(hWnd);
         return 0;
 
     case WM_DESTROY:
