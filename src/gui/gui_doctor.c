@@ -475,25 +475,58 @@ static LRESULT CALLBACK ReminderPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         SetWindowLongPtrA(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         return 0;
     }
+    case WM_CTLCOLORSTATIC: {
+        if ((HWND)lParam == GetDlgItem(hWnd, 3010) || (HWND)lParam == GetDlgItem(hWnd, 3212)) {
+            HDC hdc = (HDC)wParam;
+            SetTextColor(hdc, RGB(200, 30, 30));
+            SetBkMode(hdc, TRANSPARENT);
+            return (LRESULT)GetStockObject(NULL_BRUSH);
+        }
+        return DefWindowProcA(hWnd, msg, wParam, lParam);
+    }
     case WM_SIZE: {
         int w = LOWORD(lParam), h = HIWORD(lParam);
-        HWND hLV = GetDlgItem(hWnd, 3001);
-        if (hLV) SetWindowPos(hLV, NULL, 5, 5, w - 10, h - 50, SWP_NOZORDER);
-        HWND hBtn = GetDlgItem(hWnd, 3101);
-        if (hBtn) SetWindowPos(hBtn, NULL, w - 120, h - 40, 110, 30, SWP_NOZORDER);
+        HWND hBanner   = GetDlgItem(hWnd, 3010);
+        HWND hAptLabel = GetDlgItem(hWnd, 3012);
+        HWND hAptLV    = GetDlgItem(hWnd, 3001);
+        HWND hOnsLabel = GetDlgItem(hWnd, 3013);
+        HWND hOnsLV    = GetDlgItem(hWnd, 3011);
+        HWND hInfo     = GetDlgItem(hWnd, 3014);
+        HWND hBtn      = GetDlgItem(hWnd, 3101);
+
+        int y = 3;
+        if (hBanner) {
+            SetWindowPos(hBanner, NULL, 3, y, w - 6, 22, SWP_NOZORDER);
+            y += 24;
+        }
+        int lvh = (h - y - 20 - 20 - 12 - 50) / 2;
+        if (lvh < 50) lvh = 50;
+
+        if (hAptLabel) SetWindowPos(hAptLabel, NULL, 5, y, w - 10, 20, SWP_NOZORDER);
+        y += 20;
+        if (hAptLV) SetWindowPos(hAptLV, NULL, 5, y, w - 10, lvh, SWP_NOZORDER);
+        y += lvh + 4;
+        if (hOnsLabel) SetWindowPos(hOnsLabel, NULL, 5, y, w - 10, 20, SWP_NOZORDER);
+        y += 20;
+        if (hOnsLV) SetWindowPos(hOnsLV, NULL, 5, y, w - 10, lvh, SWP_NOZORDER);
+
+        if (hInfo) SetWindowPos(hInfo, NULL, 5, h - 40, 300, 25, SWP_NOZORDER);
+        if (hBtn)  SetWindowPos(hBtn,  NULL, w - 120, h - 40, 110, 30, SWP_NOZORDER);
         return 0;
     }
     case WM_COMMAND: {
         if (LOWORD(wParam) == 3101) {
-            HWND hLV = GetDlgItem(hWnd, 3001);
-            if (!hLV) return 0;
-            char apptId[MAX_ID] = "";
-            GetSelectedItemText(hLV, 0, apptId, sizeof(apptId));
-            if (apptId[0] == 0) {
+            HWND hAptLV = GetDlgItem(hWnd, 3001);
+            HWND hOnsLV = GetDlgItem(hWnd, 3011);
+            char selId[MAX_ID] = "";
+            if (hAptLV) GetSelectedItemText(hAptLV, 0, selId, sizeof(selId));
+            if (selId[0] == 0 && hOnsLV)
+                GetSelectedItemText(hOnsLV, 0, selId, sizeof(selId));
+            if (selId[0] == 0) {
                 MessageBoxA(GetParent(hWnd), "请先选择一个待接诊患者", "提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
-            strcpy(g_pendingApptId, apptId);
+            strcpy(g_pendingApptId, selId);
             SwitchView(GetParent(hWnd), NAV_DOCTOR_CONSULTATION);
         }
         return 0;
@@ -519,17 +552,60 @@ static HWND CreateReminderPage(HWND hParent, RECT *rc) {
 
     int w = (rc->right - rc->left) - 10;
     int h = (rc->bottom - rc->top) - 10;
-
-    HWND hLV = CreateListView(hPage, 3001, 5, 5, w - 10, h - 50);
-    AddCol(hLV, 0, "预约ID", 100);
-    AddCol(hLV, 1, "患者ID", 80);
-    AddCol(hLV, 2, "日期", 100);
-    AddCol(hLV, 3, "时段", 60);
-    AddCol(hLV, 4, "状态", 60);
-
     const char *did = GetDoctorId();
+
+    PatientNode *patients = load_patients_list();
+    OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+
+    /* 统计急诊患者数 + 计算布局偏移
+       Count emergency patients + compute banner offset */
+    int emergCount = 0;
+    if (patients && strlen(did) > 0) {
+        OnsiteRegistrationNode *on = onQ.front;
+        while (on) {
+            if (strcmp(on->data.doctor_id, did) == 0 &&
+                strcmp(on->data.status, "排队中") == 0) {
+                PatientNode *p = patients;
+                while (p) {
+                    if (strcmp(p->data.patient_id, on->data.patient_id) == 0) {
+                        if (p->data.is_emergency) emergCount++;
+                        break;
+                    }
+                    p = p->next;
+                }
+            }
+            on = on->next;
+        }
+    }
+
+    int bannerH = 0;
+    if (emergCount > 0) {
+        char eBuf[64];
+        snprintf(eBuf, sizeof(eBuf), "⚠ 急诊患者 %d 人待接诊!", emergCount);
+        CreateWindowA("STATIC", eBuf, WS_VISIBLE | WS_CHILD | SS_CENTER,
+                      3, 3, w - 6, 22, hPage, (HMENU)3010, g_hInst, NULL);
+        bannerH = 24;
+    }
+
+    int y = 3 + (bannerH ? bannerH + 2 : 0);
+    int lvH = (h - y - 20 - 20 - 12 - 50) / 2;
+    if (lvH < 50) lvH = 50;
+
+    /* ── 预约挂号区域 / Appointment Section ── */
+    CreateWindowA("STATIC", "预约挂号",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        5, y, 200, 20, hPage, (HMENU)3012, g_hInst, NULL);
+    y += 20;
+
+    HWND hAptLV = CreateListView(hPage, 3001, 5, y, w - 10, lvH);
+    AddCol(hAptLV, 0, "预约ID", 100);
+    AddCol(hAptLV, 1, "患者ID", 80);
+    AddCol(hAptLV, 2, "日期", 100);
+    AddCol(hAptLV, 3, "时段", 60);
+    AddCol(hAptLV, 4, "状态", 60);
+
+    int aptRow = 0;
     AppointmentNode *apps = load_appointments_list();
-    int row = 0;
     if (apps && strlen(did) > 0) {
         AppointmentNode *cur = apps;
         while (cur) {
@@ -540,17 +616,63 @@ static HWND CreateReminderPage(HWND hParent, RECT *rc) {
                     cur->data.appointment_date, cur->data.appointment_time,
                     cur->data.status
                 };
-                AddRow(hLV, row++, 5, items);
+                AddRow(hAptLV, aptRow++, 5, items);
             }
             cur = cur->next;
         }
     }
     if (apps) free_appointment_list(apps);
+    y += lvH + 4;
 
-    char info[64];
-    snprintf(info, sizeof(info), "待接诊: %d 人", row);
+    /* ── 现场排队区域 / Onsite Queue Section ── */
+    CreateWindowA("STATIC", "现场排队",
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        5, y, 200, 20, hPage, (HMENU)3013, g_hInst, NULL);
+    y += 20;
+
+    HWND hOnsLV = CreateListView(hPage, 3011, 5, y, w - 10, lvH);
+    AddCol(hOnsLV, 0, "现场单号", 130);
+    AddCol(hOnsLV, 1, "患者ID", 80);
+    AddCol(hOnsLV, 2, "排队号", 60);
+    AddCol(hOnsLV, 3, "科室", 80);
+    AddCol(hOnsLV, 4, "状态", 60);
+    AddCol(hOnsLV, 5, "急诊", 40);
+
+    int onsRow = 0;
+    if (strlen(did) > 0) {
+        OnsiteRegistrationNode *on = onQ.front;
+        while (on) {
+            if (strcmp(on->data.doctor_id, did) == 0) {
+                const char *isEmerg = "否";
+                if (patients) {
+                    PatientNode *p = patients;
+                    while (p) {
+                        if (strcmp(p->data.patient_id, on->data.patient_id) == 0) {
+                            isEmerg = p->data.is_emergency ? "是" : "否";
+                            break;
+                        }
+                        p = p->next;
+                    }
+                }
+                char qn[12];
+                snprintf(qn, sizeof(qn), "%d", on->data.queue_number);
+                const char *items[6] = {
+                    on->data.onsite_id, on->data.patient_id, qn,
+                    on->data.department_id, on->data.status, isEmerg
+                };
+                AddRow(hOnsLV, onsRow++, 6, items);
+            }
+            on = on->next;
+        }
+    }
+
+    free_onsite_registration_queue(&onQ);
+    if (patients) free_patient_list(patients);
+
+    char info[80];
+    snprintf(info, sizeof(info), "待接诊: %d 人预约 + %d 人现场", aptRow, onsRow);
     CreateWindowA("STATIC", info, WS_VISIBLE | WS_CHILD | SS_LEFT,
-                  5, h - 40, 200, 25, hPage, NULL, g_hInst, NULL);
+                  5, h - 40, 300, 25, hPage, (HMENU)3014, g_hInst, NULL);
 
     CreateWindowA("BUTTON", "接诊选中患者",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
@@ -575,22 +697,22 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
     case WM_COMMAND: {
         if (LOWORD(wParam) == 3201) {
             const char *did = GetDoctorId();
-            /* 保存诊断: 创建病历→更新预约→推进治疗阶段→询问开药
-               Save: create medical record → update appointment → advance stage → offer Rx */
             if (strlen(did) == 0) {
                 MessageBoxA(GetParent(hWnd), "未找到医生信息", "错误", MB_OK | MB_ICONERROR);
                 return 0;
             }
 
-            HWND hLV = GetDlgItem(hWnd, 3002);
+            HWND hLV   = GetDlgItem(hWnd, 3002);
             HWND hDiag = GetDlgItem(hWnd, 3202);
             HWND hAdvice = GetDlgItem(hWnd, 3203);
             if (!hLV || !hDiag || !hAdvice) return 0;
 
-            char apptId[MAX_ID] = "";
-            GetSelectedItemText(hLV, 0, apptId, sizeof(apptId));
-            if (apptId[0] == 0) {
-                MessageBoxA(GetParent(hWnd), "请先选择一个患者", "提示", MB_OK | MB_ICONINFORMATION);
+            char svcId[MAX_ID] = "";
+            GetSelectedItemText(hLV, 0, svcId, sizeof(svcId));
+            if (svcId[0] == 0 && g_pendingApptId[0])
+                strcpy(svcId, g_pendingApptId);
+            if (svcId[0] == 0) {
+                MessageBoxA(GetParent(hWnd), "请先选择一个患者或输入现场单号", "提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
 
@@ -603,59 +725,79 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 return 0;
             }
 
-            /* 加载预约 */
-            AppointmentNode *apps = load_appointments_list();
-            Appointment *appt = NULL;
-            if (apps) {
-                AppointmentNode *cur = apps;
-                while (cur) {
-                    if (strcmp(cur->data.appointment_id, apptId) == 0) {
-                        appt = &cur->data;
+            int isOnsite = (strncmp(svcId, "OS_", 3) == 0);
+            char savedPatientId[MAX_ID] = "";
+            char savedDeptId[MAX_ID] = "";
+
+            if (isOnsite) {
+                OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+                OnsiteRegistrationNode *on = onQ.front;
+                int found = 0;
+                while (on) {
+                    if (strcmp(on->data.onsite_id, svcId) == 0 &&
+                        strcmp(on->data.doctor_id, did) == 0) {
+                        strcpy(savedPatientId, on->data.patient_id);
+                        strcpy(savedDeptId, on->data.department_id);
+                        strcpy(on->data.status, "就诊中");
+                        found = 1;
                         break;
                     }
-                    cur = cur->next;
+                    on = on->next;
                 }
-            }
-            if (!appt) {
-                if (apps) free_appointment_list(apps);
-                MessageBoxA(GetParent(hWnd), "未找到预约记录", "错误", MB_OK | MB_ICONERROR);
-                return 0;
+                if (!found) {
+                    free_onsite_registration_queue(&onQ);
+                    MessageBoxA(GetParent(hWnd), "未找到该现场挂号记录", "错误", MB_OK | MB_ICONERROR);
+                    return 0;
+                }
+                save_onsite_registration_queue(&onQ);
+                free_onsite_registration_queue(&onQ);
+            } else {
+                AppointmentNode *apps = load_appointments_list();
+                Appointment *appt = NULL;
+                if (apps) {
+                    AppointmentNode *cur = apps;
+                    while (cur) {
+                        if (strcmp(cur->data.appointment_id, svcId) == 0) {
+                            appt = &cur->data;
+                            break;
+                        }
+                        cur = cur->next;
+                    }
+                }
+                if (!appt) {
+                    if (apps) free_appointment_list(apps);
+                    MessageBoxA(GetParent(hWnd), "未找到预约记录", "错误", MB_OK | MB_ICONERROR);
+                    return 0;
+                }
+                strcpy(savedPatientId, appt->patient_id);
+                strcpy(savedDeptId, appt->department_id);
+                strcpy(appt->status, "已就诊");
+                save_appointments_list(apps);
+                free_appointment_list(apps);
             }
 
-            /* 创建就诊记录 */
+            /* 创建就诊记录 / Create medical record */
             MedicalRecord rec;
             memset(&rec, 0, sizeof(rec));
             generate_id(rec.record_id, sizeof(rec.record_id), "MR");
-            strcpy(rec.patient_id, appt->patient_id);
+            strcpy(rec.patient_id, savedPatientId);
             strcpy(rec.doctor_id, did);
-            strcpy(rec.appointment_id, apptId);
+            strcpy(rec.appointment_id, svcId);
             snprintf(rec.diagnosis, sizeof(rec.diagnosis), "%s | 治疗建议: %s", diagnosis, advice);
             get_current_time(rec.diagnosis_date, sizeof(rec.diagnosis_date));
             strcpy(rec.status, "已就诊");
-
-            /* 在释放 apps 之前保存 patient_id (appt 指针指向 apps 内部数据)
-               Save patient_id before freeing apps (appt points into apps data) */
-            char savedPatientId[MAX_ID];
-            strcpy(savedPatientId, appt->patient_id);
 
             MedicalRecordNode *recs = load_medical_records_list();
             MedicalRecordNode *recNode = create_medical_record_node(&rec);
             if (recNode) {
                 recNode->next = recs;
                 save_medical_records_list(recNode);
-                /* recNode->next 指向 recs，一并释放 */
                 free_medical_record_list(recNode);
             } else if (recs) {
                 free_medical_record_list(recs);
             }
-            /* recs 已通过上方的分支释放，不再重复释放 */
 
-            /* 更新预约状态 */
-            strcpy(appt->status, "已就诊");
-            save_appointments_list(apps);
-            free_appointment_list(apps);
-
-            /* 更新患者治疗阶段（此时 appt 已失效，用 savedPatientId） */
+            /* 更新患者治疗阶段 / Update patient treatment stage */
             PatientNode *pts = load_patients_list();
             if (pts) {
                 PatientNode *cur = pts;
@@ -671,9 +813,9 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 free_patient_list(pts);
             }
 
-            append_log(g_currentUser.username, "接诊", "appointment", apptId, diagnosis);
+            append_log(g_currentUser.username, "接诊", isOnsite ? "onsite" : "appointment", svcId, diagnosis);
 
-            MessageBoxA(GetParent(hWnd), "诊断已保存", "成功", MB_OK | MB_ICONINFORMATION);
+            MessageBoxA(GetParent(hWnd), isOnsite ? "接诊已开始 (就诊中)" : "诊断已保存", "成功", MB_OK | MB_ICONINFORMATION);
 
             if (MessageBoxA(GetParent(hWnd), "是否需要开药？", "开药",
                             MB_YESNO | MB_ICONQUESTION) == IDYES) {
@@ -685,6 +827,45 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 ShowDrugDispenseDialog(GetParent(hWnd), &rxData);
             }
 
+            PostMessage(GetParent(hWnd), WM_APP_REFRESH, NAV_DOCTOR_CONSULTATION, 0);
+        }
+
+        if (LOWORD(wParam) == 3204) {
+            if (g_pendingApptId[0] == 0 || strncmp(g_pendingApptId, "OS_", 3) != 0) {
+                MessageBoxA(GetParent(hWnd), "当前没有进行中的现场接诊", "提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+            OnsiteRegistrationNode *on = onQ.front;
+            int found = 0;
+            while (on) {
+                if (strcmp(on->data.onsite_id, g_pendingApptId) == 0) {
+                    if (strcmp(on->data.status, "就诊中") == 0) {
+                        strcpy(on->data.status, "已接诊");
+                        found = 1;
+                    } else {
+                        char msg[100];
+                        snprintf(msg, sizeof(msg), "当前状态为 %s，无法完成接诊", on->data.status);
+                        MessageBoxA(GetParent(hWnd), msg, "提示", MB_OK | MB_ICONINFORMATION);
+                        free_onsite_registration_queue(&onQ);
+                        return 0;
+                    }
+                    break;
+                }
+                on = on->next;
+            }
+            if (!found) {
+                free_onsite_registration_queue(&onQ);
+                MessageBoxA(GetParent(hWnd), "未找到该现场挂号记录", "错误", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+            save_onsite_registration_queue(&onQ);
+            free_onsite_registration_queue(&onQ);
+
+            append_log(g_currentUser.username, "完成接诊", "onsite", g_pendingApptId, "");
+            MessageBoxA(GetParent(hWnd), "接诊已完成", "成功", MB_OK | MB_ICONINFORMATION);
+            g_pendingApptId[0] = 0;
             PostMessage(GetParent(hWnd), WM_APP_REFRESH, NAV_DOCTOR_CONSULTATION, 0);
         }
         return 0;
@@ -709,21 +890,81 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
     if (!hPage) return NULL;
 
     int w = (rc->right - rc->left) - 20;
-    int y = 10;
+    int y = 5;
+    const char *did = GetDoctorId();
 
-    CreateWindowA("STATIC", "选择待就诊患者:",
+    /* ── 队列信息 / Queue Info Section ── */
+    OnsiteRegistrationQueue onQ = load_onsite_registration_queue();
+    PatientNode *patients = load_patients_list();
+
+    char callingInfo[120] = "当前叫号: 暂无";
+    char suggestInfo[200] = "建议接诊: 暂无";
+    int emergCount = 0;
+    char firstOS[MAX_ID] = "";
+
+    if (strlen(did) > 0) {
+        OnsiteRegistrationNode *on = onQ.front;
+        while (on) {
+            if (strcmp(on->data.doctor_id, did) == 0) {
+                if (strcmp(on->data.status, "就诊中") == 0) {
+                    snprintf(callingInfo, sizeof(callingInfo),
+                             "当前叫号: %d 号 (%s)", on->data.queue_number, on->data.onsite_id);
+                }
+                if (firstOS[0] == 0 && strcmp(on->data.status, "排队中") == 0) {
+                    strcpy(firstOS, on->data.onsite_id);
+                    char pname[50] = "";
+                    if (patients) {
+                        PatientNode *p = patients;
+                        while (p) {
+                            if (strcmp(p->data.patient_id, on->data.patient_id) == 0) {
+                                strcpy(pname, p->data.name);
+                                if (p->data.is_emergency) emergCount++;
+                                break;
+                            }
+                            p = p->next;
+                        }
+                    }
+                    snprintf(suggestInfo, sizeof(suggestInfo),
+                             "建议接诊: %s 患者%s 排队号%03d (%s)",
+                             on->data.onsite_id, pname[0] ? pname : "?",
+                             on->data.queue_number, on->data.department_id);
+                }
+            }
+            on = on->next;
+        }
+    }
+    free_onsite_registration_queue(&onQ);
+    if (patients) free_patient_list(patients);
+
+    CreateWindowA("STATIC", callingInfo, WS_VISIBLE | WS_CHILD | SS_LEFT,
+                  10, y, w, 20, hPage, (HMENU)3210, g_hInst, NULL);
+    y += 20;
+    CreateWindowA("STATIC", suggestInfo, WS_VISIBLE | WS_CHILD | SS_LEFT,
+                  10, y, w, 20, hPage, (HMENU)3211, g_hInst, NULL);
+    y += 20;
+
+    if (emergCount > 0) {
+        char eBuf[64];
+        snprintf(eBuf, sizeof(eBuf), "⚠ 请优先处理急诊患者!");
+        CreateWindowA("STATIC", eBuf, WS_VISIBLE | WS_CHILD | SS_CENTER,
+                      10, y, w, 20, hPage, (HMENU)3212, g_hInst, NULL);
+        y += 24;
+    }
+    y += 5;
+
+    /* ── 预约挂号接诊 / Appointment Consultation ── */
+    CreateWindowA("STATIC", "选择待就诊患者 (预约挂号):",
         WS_VISIBLE | WS_CHILD | SS_LEFT,
         10, y, 300, 20, hPage, NULL, g_hInst, NULL);
     y += 25;
 
-    HWND hLV = CreateListView(hPage, 3002, 10, y, w, 120);
+    HWND hLV = CreateListView(hPage, 3002, 10, y, w, 100);
     AddCol(hLV, 0, "预约ID", 100);
     AddCol(hLV, 1, "患者ID", 100);
     AddCol(hLV, 2, "日期", 100);
     AddCol(hLV, 3, "时段", 60);
     AddCol(hLV, 4, "状态", 80);
 
-    const char *did = GetDoctorId();
     AppointmentNode *apps = load_appointments_list();
     int row = 0, preSelectRow = -1;
     if (apps && strlen(did) > 0) {
@@ -750,9 +991,8 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
     if (apps) free_appointment_list(apps);
     if (preSelectRow >= 0)
         ListView_SetItemState(hLV, preSelectRow, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    g_pendingApptId[0] = 0;
 
-    y += 130;
+    y += 108;
 
     CreateWindowA("STATIC", "诊断:",
         WS_VISIBLE | WS_CHILD | SS_LEFT, 10, y, 100, 20,
@@ -761,8 +1001,8 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
 
     CreateWindowA("EDIT", "",
         WS_VISIBLE | WS_CHILD | ES_MULTILINE | WS_BORDER | WS_VSCROLL,
-        10, y, w, 80, hPage, (HMENU)3202, g_hInst, NULL);
-    y += 90;
+        10, y, w, 60, hPage, (HMENU)3202, g_hInst, NULL);
+    y += 68;
 
     CreateWindowA("STATIC", "治疗建议:",
         WS_VISIBLE | WS_CHILD | SS_LEFT, 10, y, 100, 20,
@@ -771,12 +1011,25 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
 
     CreateWindowA("EDIT", "",
         WS_VISIBLE | WS_CHILD | ES_MULTILINE | WS_BORDER | WS_VSCROLL,
-        10, y, w, 80, hPage, (HMENU)3203, g_hInst, NULL);
-    y += 90;
+        10, y, w, 60, hPage, (HMENU)3203, g_hInst, NULL);
+    y += 68;
 
-    CreateWindowA("BUTTON", "保存诊断并标记已就诊",
+    CreateWindowA("BUTTON", "保存诊断",
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        10, y, 160, 30, hPage, (HMENU)3201, g_hInst, NULL);
+        10, y, 120, 30, hPage, (HMENU)3201, g_hInst, NULL);
+    CreateWindowA("BUTTON", "完成接诊 (现场)",
+        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        140, y, 140, 30, hPage, (HMENU)3204, g_hInst, NULL);
+
+    /* Show a hint if there is a pending onsite ID from reminder page */
+    if (g_pendingApptId[0] && strncmp(g_pendingApptId, "OS_", 3) == 0) {
+        char hint[100];
+        snprintf(hint, sizeof(hint), "  - 当前选中: %s (现场患者)", g_pendingApptId);
+        CreateWindowA("STATIC", hint, WS_VISIBLE | WS_CHILD | SS_LEFT,
+                      10, y + 35, w, 20, hPage, NULL, g_hInst, NULL);
+    } else {
+        g_pendingApptId[0] = 0;
+    }
 
     return hPage;
 }
