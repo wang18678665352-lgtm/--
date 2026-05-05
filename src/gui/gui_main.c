@@ -159,6 +159,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     g_hInst = hInstance;
 
+    /* 初始化文件修改时间缓存，避免首次定时器误判为变更
+       Init mtime caches so the first timer tick doesn't trigger a spurious refresh */
+    {
+        struct stat st;
+        if (stat(APPOINTMENTS_FILE, &st) == 0)   g_lastApptMtime   = st.st_mtime;
+        if (stat(MEDICAL_RECORDS_FILE, &st) == 0) g_lastRecordMtime = st.st_mtime;
+        if (stat(PRESCRIPTIONS_FILE, &st) == 0)   g_lastRxMtime     = st.st_mtime;
+        if (stat(WARDS_FILE, &st) == 0)           g_lastWardMtime   = st.st_mtime;
+    }
+
     /* 创建主窗口 / Create main window */
     if (!InitMainWindow(hInstance, nCmdShow))
         return 1;
