@@ -1,9 +1,30 @@
+/*
+ * gui_patient.c — Win32 GUI 患者界面实现 / Win32 GUI patient page implementation
+ *
+ * 实现患者角色的所有 GUI 页面 (7 个页面 + 2 个模态对话框):
+ *   - 预约挂号 (CreateRegisterPage) — 选择科室→医生→日期→时段, 校验排班后创建预约
+ *   - 预约查询 (CreateAppointmentPage) — ListView 展示当前患者所有预约, 支持取消
+ *   - 诊断结果 (CreateDiagnosisPage) — 查看病史记录列表, 选中查看诊断详情
+ *   - 处方查询 (CreatePrescriptionPage) — 查看所有处方的药品/数量/金额
+ *   - 住院信息 (CreateWardPage) — 查看病房类型/总床位/剩余床位
+ *   - 治疗进度 (CreateProgressPage) — 显示当前治疗阶段与紧急状态
+ *   - 个人信息 (CreateProfilePage) — 查看与编辑个人资料 (姓名/性别/年龄/电话/地址)
+ *
+ * 每个页面使用独立的窗口类, 通过 CreatePatientPage() 工厂函数按 viewId 路由。
+ * 模态对话框 (挂号 RegDlgProc, 编辑资料 PatFieldDlgProc) 使用自定义窗口类 +
+ * 本地模态消息循环 (EnableWindow 禁用父窗口 + GetMessage 循环)。
+ *
+ * Implements all 7 patient-role GUI pages with ListView data display,
+ * modal dialogs for registration and profile editing, appointment
+ * management with schedule validation, and medical record browsing.
+ */
+
 #include "gui_patient.h"
 #include "gui_main.h"
 #include "../data_storage.h"
 #include "../public.h"
 
-/* ─── ListView 工具 ─────────────────────────────────────────────────── */
+/* ─── ListView 工具函数 / ListView Utility Functions ────────────────── */
 
 static HWND CreateListView(HWND hParent, int id, int x, int y, int w, int h) {
     HWND hLV = CreateWindowA(WC_LISTVIEWA, "",
@@ -36,13 +57,14 @@ static void AddRow(HWND hLV, int row, int cols, const char **items) {
     }
 }
 
-/* 获取当前患者 ID */
+/* 获取当前患者 ID (通过用户名查找患者档案)
+   Get current patient ID by looking up username in patient records */
 static const char* GetPatientId(void) {
     Patient *p = find_patient_by_username(g_currentUser.username);
     return p ? p->patient_id : "";
 }
 
-/* ─── 字段编辑对话框（给个人信息用） ──────────────────────────────── */
+/* ─── 字段编辑对话框 (给个人信息用) / Profile Field Edit Dialog ───── */
 
 #define PF_FIELDS_MAX 8
 
@@ -141,7 +163,8 @@ static int ShowPatFieldDialog(HWND hParent, const char *title,
     return g_pfResult == 1;
 }
 
-/* 检查 dateStr(YYYY-MM-DD) 是否在 [today, today+maxDays] 范围内 */
+/* 检查 dateStr (YYYY-MM-DD) 是否在 [today, today+maxDays] 范围内
+   Check if dateStr (YYYY-MM-DD) is within [today, today+maxDays] */
 static int is_date_in_range(const char *dateStr, int maxDays) {
     time_t now = time(NULL);
     struct tm tmNow;
@@ -165,7 +188,8 @@ static int is_date_in_range(const char *dateStr, int maxDays) {
     return 1;
 }
 
-/* 检查医生在指定日期时段是否有排班 */
+/* 检查医生在指定日期时段是否有排班 (状态=正常)
+   Check if doctor has an active schedule for the given date+timeslot */
 static int doctor_has_schedule(const char *docId, const char *date, const char *timeSlot) {
     ScheduleNode *sched = load_schedules_list();
     if (!sched) return 1; /* 无排班数据则放行 */
@@ -183,7 +207,12 @@ static int doctor_has_schedule(const char *docId, const char *date, const char *
     return found;
 }
 
-/* ─── 挂号对话框 ──────────────────────────────────────────────────── */
+/* ─── 挂号对话框 / Registration Dialog ──────────────────────────────── */
+
+/* 挂号对话框: 科室下拉→联动过滤医生→日期下拉(今天~+6天)→时段下拉(7个时段)
+   确认挂号时校验排班 → 创建预约 → 更新医生繁忙度
+   Registration: dept combo → filtered doctor combo → date (today~+6d) →
+   time slot (7 slots) → validate schedule → create appointment → update busy level */
 
 #define IDC_REG_DEPT    3101
 #define IDC_REG_DOCTOR  3102
@@ -455,7 +484,13 @@ static int ShowRegDialog(HWND hParent) {
     return g_regResult == 1;
 }
 
-/* ─── 页面窗口过程 ─────────────────────────────────────────────────── */
+/* ─── 页面窗口过程 / Patient Page Window Procedure ──────────────────── */
+
+/* PatientPageWndProc — 患者页面的通用消息处理
+   WM_CREATE: 存储 viewId 到 GWLP_USERDATA
+   WM_SIZE:   撑满所有子控件
+   WM_COMMAND: 处理挂号(1010)/取消预约(1002)/编辑资料(1020)按钮
+   WM_NOTIFY: 诊断页面 ListView 选中变化 → 显示诊断详情 */
 
 static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     int viewId = (int)GetWindowLongPtrA(hWnd, GWLP_USERDATA);
@@ -613,7 +648,7 @@ static LRESULT CALLBACK PatientPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     }
 }
 
-/* ─── 挂号页面 ─────────────────────────────────────────────────────── */
+/* ─── 挂号页面 / Registration Page ──────────────────────────────────── */
 
 static HWND CreateRegisterPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -650,7 +685,7 @@ static HWND CreateRegisterPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 预约查询页面 ─────────────────────────────────────────────────── */
+/* ─── 预约查询页面 / Appointment Query Page ─────────────────────────── */
 
 static HWND CreateAppointmentPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -705,7 +740,7 @@ static HWND CreateAppointmentPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 诊断结果页面 ─────────────────────────────────────────────────── */
+/* ─── 诊断结果页面 / Diagnosis Results Page ─────────────────────────── */
 
 static HWND CreateDiagnosisPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -762,7 +797,7 @@ static HWND CreateDiagnosisPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 处方查询页面 ─────────────────────────────────────────────────── */
+/* ─── 处方查询页面 / Prescription Query Page ────────────────────────── */
 
 static HWND CreatePrescriptionPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -818,7 +853,7 @@ static HWND CreatePrescriptionPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 住院信息页面 ─────────────────────────────────────────────────── */
+/* ─── 住院信息页面 / Ward Information Page ──────────────────────────── */
 
 static HWND CreateWardPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -862,7 +897,7 @@ static HWND CreateWardPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 治疗进度页面 ─────────────────────────────────────────────────── */
+/* ─── 治疗进度页面 / Treatment Progress Page ────────────────────────── */
 
 static HWND CreateProgressPage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -903,7 +938,7 @@ static HWND CreateProgressPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 个人信息页面 ─────────────────────────────────────────────────── */
+/* ─── 个人信息页面 / Profile Page ───────────────────────────────────── */
 
 static HWND CreateProfilePage(HWND hParent, RECT *rc) {
     WNDCLASSA wc = {0};
@@ -971,7 +1006,10 @@ static HWND CreateProfilePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 公开接口 ─────────────────────────────────────────────────────── */
+/* ─── 公开接口 / Public Interface ───────────────────────────────────── */
+
+/* CreatePatientPage — 工厂函数, 按 viewId 路由到各页面创建函数
+   Factory function routing viewId to the appropriate page creator */
 
 HWND CreatePatientPage(HWND hParent, int viewId, RECT *rc) {
     switch (viewId) {
