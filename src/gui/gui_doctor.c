@@ -1,9 +1,32 @@
+/*
+ * gui_doctor.c — Win32 GUI 医生界面实现 / Win32 GUI doctor page implementation
+ *
+ * 实现医生角色的所有 GUI 页面 (7 个页面 + 开药对话框):
+ *   - 待接诊 (CreateReminderPage) — 显示当前医生所有"待就诊"预约, 选中后跳转接诊
+ *   - 接诊 (CreateConsultationPage) — 选择患者→填写诊断/治疗建议→保存病历→更新预约状态
+ *   - 病房呼叫 (CreateWardCallPage) — 查看所有病房呼叫, 标记"已响应"
+ *   - 紧急标记 (CreateEmergencyPage) — 切换患者紧急状态
+ *   - 进度更新 (CreateProgressPage) — 推进患者治疗阶段 (初始→诊治中→康复中→已完成)
+ *   - 病历模板 (CreateTemplatePage) — 管理病历模板的 CRUD (快捷码/分类/内容)
+ *   - 开药 (CreatePrescribePage) — 从病历列表选择→打开开药对话框→购物车模式添加药品
+ *
+ * 开药对话框 (DrugDispenseDlgProc): 搜索/筛选药品→添加到购物车→调整数量→确认开药
+ * (逐药创建处方 + 扣减库存 + 记录审计日志)。
+ *
+ * 每个页面使用独立窗口类 + WndProc, 通过 CreateDoctorPage() 工厂函数按 viewId 路由。
+ * 待接诊→接诊 通过静态变量 g_pendingApptId 传递选中的预约 ID。
+ *
+ * Implements all 7 doctor-role GUI pages with modal drug dispensing dialog,
+ * cart-style prescription creation with stock deduction, medical record
+ * lifecycle management, and template CRUD operations.
+ */
+
 #include "gui_doctor.h"
 #include "gui_main.h"
 #include "../data_storage.h"
 #include "../public.h"
 
-/* ─── ListView 工具函数 ───────────────────────────────────────────────── */
+/* ─── ListView 工具函数 / ListView Utility Functions ────────────────── */
 static HWND CreateListView(HWND hParent, int id, int x, int y, int w, int h) {
     HWND hLV = CreateWindowA(WC_LISTVIEWA, "",
         WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS |
@@ -35,7 +58,8 @@ static void AddRow(HWND hLV, int row, int cols, const char **items) {
     }
 }
 
-/* 获取当前医生 ID（返回静态缓冲区，无需释放） */
+/* 获取当前医生 ID (通过用户名匹配, 返回静态缓冲区无需释放)
+   Get current doctor ID by matching username, returns static buffer */
 static const char* GetDoctorId(void) {
     static char id[MAX_ID] = "";
     DoctorNode *head = load_doctors_list();
@@ -55,7 +79,8 @@ static const char* GetDoctorId(void) {
     return id;
 }
 
-/* 获取选中的 ListView 首列表格文本 */
+/* 获取选中的 ListView 指定列文本 (无选中时返回空串)
+   Get text from selected ListView row at specified column, or empty */
 static void GetSelectedItemText(HWND hLV, int col, char *buf, int size) {
     int sel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
     if (sel >= 0) {
@@ -65,7 +90,7 @@ static void GetSelectedItemText(HWND hLV, int col, char *buf, int size) {
     }
 }
 
-/* ─── 基类 WndProc（给没有按钮的页面使用） ────────────────────────────── */
+/* ─── 基类 WndProc (给无按钮的页面使用) / Base WndProc ─────────────── */
 LRESULT CALLBACK DoctorPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
@@ -90,16 +115,17 @@ LRESULT CALLBACK DoctorPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 }
 
-/* ─── 开药对话框（模态） ──────────────────────────────────────────────── */
+/* ─── 开药对话框 (模态) / Drug Dispensing Dialog (Modal) ───────────── */
 
-/* 接诊上下文（传递给开药对话框） */
+/* 接诊上下文 (传递给开药对话框: 病历ID/患者ID/医生ID)
+   Consultation context passed to drug dispense dialog */
 typedef struct {
     char record_id[MAX_ID];
     char patient_id[MAX_ID];
     char doctor_id[MAX_ID];
 } ConsultData;
 
-/* 购物车条目 */
+/* 购物车条目 / Shopping cart item */
 #define MAX_CART_ITEMS 30
 typedef struct {
     char drug_id[MAX_ID];
@@ -111,10 +137,10 @@ typedef struct {
 
 static CartItem g_cart[MAX_CART_ITEMS];
 static int      g_cartCount = 0;
-static int      g_dispenseResult = -1;
-static ConsultData g_consultCtx;
+static int      g_dispenseResult = -1;   /* -1=运行中, 1=确认, 0=取消 / running, confirmed, cancelled */
+static ConsultData g_consultCtx;          /* 接诊上下文 (跨回调共享) / consultation context shared across callbacks */
 
-/* 开药对话框控件 ID */
+/* 开药对话框控件 ID / Drug dispense dialog control IDs */
 #define IDC_RX_SEARCH     3701
 #define IDC_RX_DRUG_LIST  3702
 #define IDC_RX_QUANTITY   3703
@@ -125,7 +151,7 @@ static ConsultData g_consultCtx;
 #define IDC_RX_CONFIRM    3708
 #define IDC_RX_CANCEL     3709
 
-static void RefreshDrugList(HWND hDlg, const char *filter) {
+/* 刷新药品列表 (可按名称过滤) / Refresh drug list, optionally filter by name */
     HWND hLV = GetDlgItem(hDlg, IDC_RX_DRUG_LIST);
     if (!hLV) return;
     ListView_DeleteAllItems(hLV);
@@ -146,7 +172,7 @@ static void RefreshDrugList(HWND hDlg, const char *filter) {
     free_drug_list(list);
 }
 
-static void RefreshCartList(HWND hDlg) {
+/* 刷新购物车列表 + 更新总计金额 / Refresh cart list + update grand total */
     HWND hLV = GetDlgItem(hDlg, IDC_RX_CART_LIST);
     if (!hLV) return;
     ListView_DeleteAllItems(hLV);
@@ -267,7 +293,7 @@ static LRESULT CALLBACK DrugDispenseDlgProc(HWND hDlg, UINT msg, WPARAM wParam, 
                 return 0;
             }
 
-            /* 检查是否已在购物车中 */
+            /* 检查购物车中是否已有该药品 → 累加数量 / Check if drug already in cart → add qty */
             int found = -1;
             for (int i = 0; i < g_cartCount; i++) {
                 if (strcmp(g_cart[i].drug_id, drugId) == 0) {
@@ -315,6 +341,8 @@ static LRESULT CALLBACK DrugDispenseDlgProc(HWND hDlg, UINT msg, WPARAM wParam, 
         }
 
         if (id == IDC_RX_CONFIRM && code == BN_CLICKED) {
+            /* 确认开药: 逐药创建处方 → 扣减库存 → 记录审计日志
+               Confirm: create prescriptions → deduct stock → audit log */
             if (g_cartCount == 0) {
                 MessageBoxA(hDlg, "请至少添加一种药品", "提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
@@ -432,9 +460,10 @@ static int ShowDrugDispenseDialog(HWND hParent, ConsultData *data) {
     return g_dispenseResult == 1;
 }
 
-/* ─── 待接诊页面 ─────────────────────────────────────────────────────── */
+/* ─── 待接诊页面 / Pending Consultation Page ────────────────────────── */
 
-/* 用于传递待接诊选中的预约 ID 到接诊页面 */
+/* 用于在待接诊→接诊间传递选中的预约 ID
+   Bridges selected appointment ID from reminder page to consultation page */
 static char g_pendingApptId[MAX_ID] = "";
 
 static LRESULT CALLBACK ReminderPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -531,7 +560,10 @@ static HWND CreateReminderPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 接诊页面 ───────────────────────────────────────────────────────── */
+/* ─── 接诊页面 / Consultation Page ───────────────────────────────────── */
+
+/* ConsultationPageWndProc: 选择待就诊患者 → 填写诊断+治疗建议 →
+   保存病历 → 更新预约状态为"已就诊" → 推进患者治疗阶段 → 可选开药 */
 
 static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -542,7 +574,8 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
     }
     case WM_COMMAND: {
         if (LOWORD(wParam) == 3201) {
-            const char *did = GetDoctorId();
+            /* 保存诊断: 创建病历→更新预约→推进治疗阶段→询问开药
+               Save: create medical record → update appointment → advance stage → offer Rx */
             if (strlen(did) == 0) {
                 MessageBoxA(GetParent(hWnd), "未找到医生信息", "错误", MB_OK | MB_ICONERROR);
                 return 0;
@@ -599,7 +632,8 @@ static LRESULT CALLBACK ConsultationPageWndProc(HWND hWnd, UINT msg, WPARAM wPar
             get_current_time(rec.diagnosis_date, sizeof(rec.diagnosis_date));
             strcpy(rec.status, "已就诊");
 
-            /* 在释放 apps 之前保存 patient_id（appt 指向 apps 内部） */
+            /* 在释放 apps 之前保存 patient_id (appt 指针指向 apps 内部数据)
+               Save patient_id before freeing apps (appt points into apps data) */
             char savedPatientId[MAX_ID];
             strcpy(savedPatientId, appt->patient_id);
 
@@ -748,7 +782,7 @@ static HWND CreateConsultationPage(HWND hParent, RECT *rc) {
 
 
 
-/* ─── 病房呼叫页面 ───────────────────────────────────────────────────── */
+/* ─── 病房呼叫页面 / Ward Call Page ──────────────────────────────────── */
 
 static LRESULT CALLBACK WardCallPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -838,7 +872,7 @@ static HWND CreateWardCallPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 紧急标记页面 ───────────────────────────────────────────────────── */
+/* ─── 紧急标记页面 / Emergency Flag Page ─────────────────────────────── */
 
 static LRESULT CALLBACK EmergencyPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -928,7 +962,7 @@ static HWND CreateEmergencyPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 进度更新页面 ───────────────────────────────────────────────────── */
+/* ─── 进度更新页面 / Progress Update Page ────────────────────────────── */
 
 static LRESULT CALLBACK ProgressPageWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -1026,9 +1060,10 @@ static HWND CreateProgressPage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 病历模板页面 ───────────────────────────────────────────────────── */
+/* ─── 病历模板页面 / Medical Template Page ──────────────────────────── */
 
-/* ─── 病历模板页面 ──────────────────────────────────────────────────── */
+/* TemplatePageWndProc: 模板 CRUD (新增/修改/删除/刷新)
+   模板编辑通过 TemplateEditDlgProc 模态对话框完成 */
 
 static MedicalTemplate g_editTmpl;
 static int g_tmplResult = -1;
@@ -1326,7 +1361,10 @@ static HWND CreateTemplatePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 开药页面 ───────────────────────────────────────────────────────── */
+/* ─── 开药页面 / Prescribe Page ──────────────────────────────────────── */
+
+/* PrescribePageWndProc: 列出当前医生的所有病历 → 选择后打开开药对话框
+   Lists all medical records for current doctor → open drug dispense dialog */
 
 static void RefreshPrescribeList(HWND hLV) {
     ListView_DeleteAllItems(hLV);
@@ -1462,7 +1500,10 @@ static HWND CreatePrescribePage(HWND hParent, RECT *rc) {
     return hPage;
 }
 
-/* ─── 公开接口 ───────────────────────────────────────────────────────── */
+/* ─── 公开接口 / Public Interface ────────────────────────────────────── */
+
+/* CreateDoctorPage — 工厂函数, 按 viewId 路由到各页面创建函数
+   Factory function routing viewId to the appropriate page creator */
 
 HWND CreateDoctorPage(HWND hParent, int viewId, RECT *rc) {
     switch (viewId) {
