@@ -437,7 +437,7 @@ static int ShowDrugDispenseDialog(HWND hParent, ConsultData *data) {
 
     HWND hDlg = CreateWindowExA(0, "DrugDispenseDialog", "开药",
         WS_VISIBLE | WS_POPUPWINDOW | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 680, 450,
+        CW_USEDEFAULT, CW_USEDEFAULT, 680, 500,
         hParent, NULL, g_hInst, (LPVOID)data);
     if (!hDlg) return 0;
 
