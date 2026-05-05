@@ -1,13 +1,33 @@
+/*
+ * analysis.c — 数据分析与统计报表 / Data analysis & statistics reports
+ *
+ * 为管理员提供多维度的医院运营数据分析:
+ *   - 经营概览: 今日门诊量、收入、床位使用率、药物消耗 TOP10
+ *   - 趋势分析: 月度就诊量、周度分布、药物消耗趋势 (与上月对比)
+ *   - 医生负载: 每位医生的预约/病历/处方量、处方金额、繁忙度标签
+ *   - 患者画像: 活跃患者数、类型分布 (普通/医保/军人)、急诊比例、治疗阶段分布
+ *   - 财务统计: 处方总额、报销金额、科室收入排名、月度收入汇总
+ *   - CSV 导出: 将所有数据导出为 Excel 可打开的 CSV 文件
+ *
+ * 所有分析视图支持可选月份筛选 (YYYY-MM 格式)，无筛选则显示全部数据。
+ *
+ * Multi-dimensional hospital operations analysis: daily overview, trends,
+ * doctor workload, patient demographics, financial stats, and CSV export.
+ * All views support optional month filter (YYYY-MM format).
+ */
+
 #include "analysis.h"
 #include "data_storage.h"
 #include "public.h"
 #include "ui_utils.h"
 #ifdef _WIN32
-#include <direct.h>
+#include <direct.h>    /* _mkdir */
 #endif
 
-// =======================  辅助结构 =======================
+/* ==================  辅助数据结构 / Helper Data Structures ================== */
 
+/* 累加项: 用于按 key 汇总金额/数量/报销
+   Accumulator item: aggregates amount/count/reimbursement by key */
 typedef struct {
     char key[MAX_ID];
     char name[MAX_NAME];
@@ -16,26 +36,32 @@ typedef struct {
     float reimbursement;
 } AccItem;
 
+/* 月度累加: 按月份汇总预约和现场挂号数量
+   Monthly accumulator: aggregates appointment and onsite counts per month */
 typedef struct {
-    char month[8];
-    int appt_count;
-    int onsite_count;
+    char month[8];          /* "YYYY-MM" */
+    int appt_count;         /* 预约数 */
+    int onsite_count;       /* 现场挂号数 */
 } MonthAcc;
 
+/* 医生负荷统计项 / Doctor workload statistics item */
 typedef struct {
     char doctor_id[MAX_ID];
     char name[MAX_NAME];
     char dept_name[MAX_NAME];
     char title[50];
-    int appt_count;
-    int record_count;
-    int prescription_count;
-    float prescription_total;
-    int busy_level;
+    int appt_count;            /* 接诊挂号数 */
+    int record_count;          /* 病历数 */
+    int prescription_count;    /* 处方数 */
+    float prescription_total;  /* 处方总金额 */
+    int busy_level;            /* 当前繁忙度 */
 } DoctorLoad;
 
-// =======================  辅助函数 =======================
+/* ==================  辅助函数 / Helper Functions ================== */
 
+/* 获取月份筛选条件: 交互式询问是否按月筛选，输入 YYYY-MM 或跳过
+   Get month filter interactively: ask y/n, then input YYYY-MM or skip.
+   Returns non-zero if a filter was entered. */
 static int analysis_get_month_filter(char *out_buf, size_t buf_size) {
     char input[16];
 
@@ -54,6 +80,9 @@ static int analysis_get_month_filter(char *out_buf, size_t buf_size) {
     return (int)strlen(out_buf);
 }
 
+/* 向累加数组中追加或更新一条项 (按 key 去重合并)
+   Add or update an accumulator item (dedup by key).
+   Returns the item index, or -1 if array is full. */
 static int add_or_update_item(AccItem *items, int *count, int max,
                               const char *key, const char *name,
                               float amount, int qty, float reimbursement) {
@@ -77,6 +106,7 @@ static int add_or_update_item(AccItem *items, int *count, int max,
     return *count - 1;
 }
 
+/* qsort 比较函数: 按金额降序 / Compare by amount descending */
 static int compare_amount_desc(const void *a, const void *b) {
     const AccItem *pa = (const AccItem *)a;
     const AccItem *pb = (const AccItem *)b;
@@ -85,22 +115,26 @@ static int compare_amount_desc(const void *a, const void *b) {
     return 0;
 }
 
+/* qsort 比较函数: 按数量降序 / Compare by count descending */
 static int compare_count_desc(const void *a, const void *b) {
     const AccItem *pa = (const AccItem *)a;
     const AccItem *pb = (const AccItem *)b;
     return pb->count - pa->count;
 }
 
+/* qsort 比较函数: 按预约量降序排医生 / Compare doctors by appointment count descending */
 static int compare_doctor_load_desc(const void *a, const void *b) {
     const DoctorLoad *pa = (const DoctorLoad *)a;
     const DoctorLoad *pb = (const DoctorLoad *)b;
     return pb->appt_count - pa->appt_count;
 }
 
+/* qsort 比较函数: 按月份字符串升序 / Compare months lexicographically ascending */
 static int compare_month(const void *a, const void *b) {
     return strcmp(((const MonthAcc *)a)->month, ((const MonthAcc *)b)->month);
 }
 
+/* 计算上月月份字符串 / Calculate previous month string */
 static void calculate_prev_month(const char *current, char *out) {
     int year, month;
     if (sscanf(current, "%d-%d", &year, &month) != 2) {
@@ -112,11 +146,13 @@ static void calculate_prev_month(const char *current, char *out) {
     snprintf(out, 8, "%04d-%02d", year, month);
 }
 
+/* 字符串前缀检查 / Check if str starts with prefix */
 static bool str_starts_with(const char *str, const char *prefix) {
     size_t plen = strlen(prefix);
     return plen > 0 && strncmp(str, prefix, plen) == 0;
 }
 
+/* 将繁忙度数值映射为中文标签 / Map busy_level to Chinese label */
 static const char* busy_level_label(int level) {
     if (level <= 3) return "较清闲";
     if (level <= 6) return "正常";
@@ -124,18 +160,22 @@ static const char* busy_level_label(int level) {
     return "繁忙";
 }
 
-// =======================  1. 经营概览 =======================
+/* ==================  1. 经营概览 / Operations Overview ================== */
 
+/* 显示当日运营概况: 门诊量(预约+现场)、收入(处方+报销)、床位使用率、药物消耗TOP10
+   Display daily operations: patient visits, revenue, bed occupancy, drug top 10 */
 static void analysis_operations_overview(const char *month_filter) {
     size_t mlen = strlen(month_filter);
     char today_str[16] = "";
-    // Get today's date (YYYY-MM-DD)
+
+    /* 获取今天的日期 (YYYY-MM-DD) / Get today's date */
     {
         time_t now = time(NULL);
         struct tm *tm_info = localtime(&now);
         strftime(today_str, sizeof(today_str), "%Y-%m-%d", tm_info);
     }
 
+    /* 加载所需数据 / Load required data */
     AppointmentNode *ap_head = load_appointments_list();
     OnsiteRegistrationQueue onsite_queue = load_onsite_registration_queue();
     WardNode *ward_head = load_wards_list();
@@ -145,7 +185,7 @@ static void analysis_operations_overview(const char *month_filter) {
     ui_sub_header("经营概览");
     if (mlen > 0) printf(C_DIM "  (%s 数据)\n" C_RESET, month_filter);
 
-    // --- 今日预约与挂号 ---
+    /* --- 今日门诊量 (预约 + 现场挂号) --- */
     int today_appt = 0, today_onsite = 0;
     {
         AppointmentNode *ap = ap_head;
@@ -172,7 +212,7 @@ static void analysis_operations_overview(const char *month_filter) {
     printf("  %-16s %d\n", "预约挂号:", today_appt);
     printf("  %-16s %d\n", "现场挂号:", today_onsite);
 
-    // --- 今日收入 ---
+    /* --- 今日收入 (处方总额 + 报销金额) --- */
     float today_revenue = 0.0f, today_reimb = 0.0f;
     {
         PrescriptionNode *pr = pres_head;
@@ -196,7 +236,7 @@ static void analysis_operations_overview(const char *month_filter) {
     printf("  %-16s %.2f\n", "报销金额:", today_reimb);
     printf("  %-16s %.2f\n", "实际收入:", today_revenue - today_reimb);
 
-    // --- 床位使用率 ---
+    /* --- 床位使用率 --- */
     int total_beds = 0, remain_beds = 0;
     {
         WardNode *w = ward_head;
@@ -211,13 +251,13 @@ static void analysis_operations_overview(const char *month_filter) {
 
     printf("\n  " C_BOLD "床位使用" C_RESET "\n");
     printf("  %-16s %d / %d\n", "床位:", occupied, total_beds);
-    if (usage_rate > 90.0f) {
+    if (usage_rate > 90.0f) {   /* >90% 使用率黄色突出 */
         printf("  %-16s " C_BOLD C_YELLOW "%.1f%%" C_RESET "\n", "使用率:", usage_rate);
     } else {
         printf("  %-16s %.1f%%\n", "使用率:", usage_rate);
     }
 
-    // --- 药物消耗 TOP10 ---
+    /* --- 药物消耗 TOP10 (按数量排序) --- */
     printf("\n  " C_BOLD "药物消耗 TOP10" C_RESET "\n");
     {
         AccItem drugs[256];
@@ -226,7 +266,6 @@ static void analysis_operations_overview(const char *month_filter) {
         PrescriptionNode *pr = pres_head;
         while (pr) {
             if (mlen == 0 || str_starts_with(pr->data.prescription_date, month_filter)) {
-                // Resolve drug name from pre-loaded drug list
                 const char *dname = pr->data.drug_id;
                 DrugNode *d = drug_head;
                 while (d) {
@@ -265,8 +304,11 @@ static void analysis_operations_overview(const char *month_filter) {
     free_appointment_list(ap_head);
 }
 
-// =======================  2. 趋势分析 =======================
+/* ==================  2. 趋势分析 / Trend Analysis ================== */
 
+/* 显示趋势: 月度就诊量、周度分布(有筛选时)、药物消耗趋势(对比上月)
+   Display trends: monthly visit volume, weekly distribution (when filtered),
+   drug consumption trend (vs previous month) */
 static void analysis_trend_trends(const char *month_filter) {
     size_t mlen = strlen(month_filter);
     AppointmentNode *ap_head = load_appointments_list();
@@ -274,7 +316,7 @@ static void analysis_trend_trends(const char *month_filter) {
 
     ui_sub_header("趋势分析");
 
-    // --- 月度就诊量 ---
+    /* --- 月度就诊量 (预约 + 现场挂号按月汇总) --- */
     {
         MonthAcc months[48];
         int month_count = 0;
@@ -283,7 +325,7 @@ static void analysis_trend_trends(const char *month_filter) {
         while (ap) {
             if (ap->data.create_time[0]) {
                 char mkey[8];
-                strncpy(mkey, ap->data.create_time, 7);
+                strncpy(mkey, ap->data.create_time, 7);  /* 取日期前7位 "YYYY-MM" */
                 mkey[7] = '\0';
                 add_or_update_item((AccItem *)months, &month_count, 48, mkey, "", 0, 0, 0);
                 for (int i = 0; i < month_count; i++) {
@@ -331,17 +373,17 @@ static void analysis_trend_trends(const char *month_filter) {
         }
     }
 
-    // --- 周度分布 (当有月份筛选时) ---
+    /* --- 周度分布 (有月份筛选时显示) --- */
     if (mlen > 0) {
-        int weekly[4] = {0, 0, 0, 0};
+        int weekly[4] = {0, 0, 0, 0};   /* 第1/2/3/4周 */
 
         AppointmentNode *ap = ap_head;
         while (ap) {
             if (str_starts_with(ap->data.create_time, month_filter)) {
-                const char *day_str = ap->data.create_time + 8;
+                const char *day_str = ap->data.create_time + 8;  /* 取日期天数部分 */
                 int day = atoi(day_str);
-                int week_idx = (day - 1) / 7;
-                if (week_idx > 3) week_idx = 3;
+                int week_idx = (day - 1) / 7;                    /* 按7天分周 */
+                if (week_idx > 3) week_idx = 3;                  /* 第4周含余数 */
                 weekly[week_idx]++;
             }
             ap = ap->next;
@@ -365,13 +407,13 @@ static void analysis_trend_trends(const char *month_filter) {
         for (int i = 0; i < 4; i++) if (weekly[i] > max_w) max_w = weekly[i];
         for (int i = 0; i < 4; i++) {
             printf("  %s: %3d  ", week_labels[i], weekly[i]);
-            int bar = max_w > 0 ? (weekly[i] * 30 / max_w) : 0;
+            int bar = max_w > 0 ? (weekly[i] * 30 / max_w) : 0;   /* 简易柱状图 (最多30个*) */
             for (int j = 0; j < bar && j < 30; j++) printf("*");
             printf("\n");
         }
     }
 
-    // --- 药物消耗趋势 (有月份筛选时对比上月) ---
+    /* --- 药物消耗趋势 (有筛选时对比上月) --- */
     if (mlen > 0) {
         char prev_month[8];
         calculate_prev_month(month_filter, prev_month);
@@ -431,8 +473,11 @@ static void analysis_trend_trends(const char *month_filter) {
     free_appointment_list(ap_head);
 }
 
-// =======================  3. 医生负载 =======================
+/* ==================  3. 医生负载 / Doctor Load ================== */
 
+/* 显示每位医生的接诊负载: 预约/病历/处方数量、处方金额、繁忙度
+   Display per-doctor workload: appointments/records/prescriptions counts,
+   prescription revenue, and busy level label */
 static void analysis_doctor_load(const char *month_filter) {
     size_t mlen = strlen(month_filter);
     DoctorNode *doc_head = load_doctors_list();
@@ -453,6 +498,7 @@ static void analysis_doctor_load(const char *month_filter) {
         return;
     }
 
+    /* 初始化医生负载数组 / Initialize doctor load array */
     DoctorLoad *loads = malloc(doc_count * sizeof(DoctorLoad));
     int idx = 0;
     DoctorNode *d = doc_head;
@@ -463,7 +509,7 @@ static void analysis_doctor_load(const char *month_filter) {
         strncpy(loads[idx].title, d->data.title, sizeof(loads[idx].title) - 1);
         loads[idx].busy_level = d->data.busy_level;
 
-        // Resolve department name
+        /* 解析科室名称 / Resolve department name */
         DepartmentNode *dp = dept_head;
         while (dp) {
             if (strcmp(dp->data.department_id, d->data.department_id) == 0) {
@@ -480,7 +526,7 @@ static void analysis_doctor_load(const char *month_filter) {
         d = d->next;
     }
 
-    // Count appointments per doctor
+    /* 按医生统计预约数 / Count appointments per doctor */
     AppointmentNode *ap = ap_head;
     while (ap) {
         if (mlen == 0 || str_starts_with(ap->data.create_time, month_filter)) {
@@ -494,7 +540,7 @@ static void analysis_doctor_load(const char *month_filter) {
         ap = ap->next;
     }
 
-    // Count medical records per doctor
+    /* 按医生统计病历数 / Count medical records per doctor */
     MedicalRecordNode *mr = rec_head;
     while (mr) {
         if (mlen == 0 || str_starts_with(mr->data.diagnosis_date, month_filter)) {
@@ -508,7 +554,7 @@ static void analysis_doctor_load(const char *month_filter) {
         mr = mr->next;
     }
 
-    // Count prescriptions per doctor
+    /* 按医生统计处方数和金额 / Count prescriptions and totals per doctor */
     PrescriptionNode *pre_head = load_prescriptions_list();
     PrescriptionNode *pr = pre_head;
     while (pr) {
@@ -525,6 +571,7 @@ static void analysis_doctor_load(const char *month_filter) {
     }
     free_prescription_list(pre_head);
 
+    /* 按预约量降序排序 / Sort by appointment count descending */
     qsort(loads, doc_count, sizeof(DoctorLoad), compare_doctor_load_desc);
 
     printf("\n  %-12s %-16s %6s %6s %6s %8s %s\n", "医生", "科室", "预约", "病历", "处方", "金额", "状态");
@@ -546,8 +593,11 @@ static void analysis_doctor_load(const char *month_filter) {
     free_doctor_list(doc_head);
 }
 
-// =======================  4. 患者画像 =======================
+/* ==================  4. 患者画像 / Patient Profile ================== */
 
+/* 显示活跃患者统计: 人数、类型分布、急诊比例、治疗阶段分布
+   Display active patient statistics: count, type distribution, emergency ratio,
+   treatment stage distribution */
 static void analysis_patient_profile(const char *month_filter) {
     size_t mlen = strlen(month_filter);
     PatientNode *pat_head = load_patients_list();
@@ -558,7 +608,7 @@ static void analysis_patient_profile(const char *month_filter) {
     ui_sub_header("患者画像");
     if (mlen > 0) printf(C_DIM "  (%s 数据)\n" C_RESET, month_filter);
 
-    // Collect unique active patients (from appointments and onsite)
+    /* 收集活跃患者 (来自预约和现场挂号) / Collect active patients */
     typedef struct {
         char patient_id[MAX_ID];
         bool is_emergency;
@@ -578,7 +628,6 @@ static void analysis_patient_profile(const char *month_filter) {
             }
             if (!found && active_count < 1000) {
                 strncpy(active[active_count].patient_id, ap->data.patient_id, MAX_ID - 1);
-                // Look up patient details
                 PatientNode *p = pat_head;
                 while (p) {
                     if (strcmp(p->data.patient_id, ap->data.patient_id) == 0) {
@@ -595,7 +644,7 @@ static void analysis_patient_profile(const char *month_filter) {
         ap = ap->next;
     }
 
-    // Also check onsite registrations
+    /* 同样检查现场挂号 / Also check onsite registrations */
     OnsiteRegistrationNode *on = onsite_queue.front;
     while (on) {
         if (mlen == 0 || str_starts_with(on->data.create_time, month_filter)) {
@@ -632,8 +681,8 @@ static void analysis_patient_profile(const char *month_filter) {
 
     printf("  %-20s %d\n", "活跃患者数:", active_count);
 
-    // Patient type distribution
-    int normal = 0, insured = 0, military = 0;
+    /* 分类统计 / Categorize */
+    int normal = 0, insured = 0, military = 0;   /* 普通/医保/军人 */
     int emergency = 0;
     int stage_counts[5] = {0};
     const char *stage_names[] = {"初诊", "检查中", "治疗中", "康复观察", "已出院"};
@@ -655,15 +704,18 @@ static void analysis_patient_profile(const char *month_filter) {
 
     int type_total = normal + insured + military;
 
+    /* 患者类型分布 / Patient type distribution */
     printf("\n  " C_BOLD "患者类型分布" C_RESET "\n");
     printf("  %-16s %4d (%.1f%%)\n", "普通:", normal, type_total > 0 ? normal * 100.0f / type_total : 0);
     printf("  %-16s %4d (%.1f%%)\n", "医保:", insured, type_total > 0 ? insured * 100.0f / type_total : 0);
     printf("  %-16s %4d (%.1f%%)\n", "军人:", military, type_total > 0 ? military * 100.0f / type_total : 0);
 
+    /* 急诊比例 / Emergency ratio */
     printf("\n  " C_BOLD "急诊比例" C_RESET "\n");
     printf("  %-16s %d / %d (%.1f%%)\n", "急诊:", emergency, active_count,
            active_count > 0 ? emergency * 100.0f / active_count : 0);
 
+    /* 治疗阶段分布 / Treatment stage distribution */
     printf("\n  " C_BOLD "治疗阶段分布" C_RESET "\n");
     for (int s = 0; s < 5; s++) {
         if (stage_counts[s] > 0) {
@@ -677,8 +729,11 @@ static void analysis_patient_profile(const char *month_filter) {
     free_patient_list(pat_head);
 }
 
-// =======================  5. 财务统计 =======================
+/* ==================  5. 财务统计 / Financial Statistics ================== */
 
+/* 显示财务统计: 处方总额/报销/实际收入、科室收入排名、月度收入汇总
+   Display financial stats: total/reimbursement/actual revenue,
+   per-department revenue ranking, monthly revenue summary */
 static void analysis_financial_stats(const char *month_filter) {
     size_t mlen = strlen(month_filter);
     PrescriptionNode *pres_head = load_prescriptions_list();
@@ -688,15 +743,15 @@ static void analysis_financial_stats(const char *month_filter) {
     ui_sub_header("财务统计");
     if (mlen > 0) printf(C_DIM "  (%s 数据)\n" C_RESET, month_filter);
 
-    // --- 全局财务汇总 ---
+    /* 全局汇总 / Global totals */
     float total_amount = 0.0f, total_reimb = 0.0f;
     int total_pres = 0;
 
-    // Per-department accumulation
+    /* 科室累加 / Per-department accumulation */
     AccItem dept_items[100];
     int dept_count = 0;
 
-    // Per-month accumulation (when no filter)
+    /* 月度累加 (无筛选时) / Per-month revenue (when no filter) */
     MonthAcc monthly_revenue[48];
     int month_rev_count = 0;
 
@@ -706,7 +761,7 @@ static void analysis_financial_stats(const char *month_filter) {
             total_pres++;
             total_amount += pr->data.total_price;
 
-            // Compute reimbursement
+            /* 计算报销金额 / Compute reimbursement */
             Drug *drug = find_drug_by_id(pr->data.drug_id);
             Patient *patient = find_patient_by_id(pr->data.patient_id);
             float reimb = 0;
@@ -717,7 +772,7 @@ static void analysis_financial_stats(const char *month_filter) {
             free(patient);
             total_reimb += reimb;
 
-            // Per-department: find doctor -> department
+            /* 通过医生找到所属科室 / Find department via doctor */
             const char *dept_id = "";
             const char *dept_name = "";
             DoctorNode *d = doc_head;
@@ -741,7 +796,7 @@ static void analysis_financial_stats(const char *month_filter) {
             add_or_update_item(dept_items, &dept_count, 100, dept_id, dept_name,
                                pr->data.total_price, 1, reimb);
 
-            // Per-month
+            /* 月度汇总 / Monthly aggregation */
             if (mlen == 0 && pr->data.prescription_date[0]) {
                 char mkey[8];
                 strncpy(mkey, pr->data.prescription_date, 7);
@@ -749,8 +804,8 @@ static void analysis_financial_stats(const char *month_filter) {
                 bool found = false;
                 for (int i = 0; i < month_rev_count; i++) {
                     if (strcmp(monthly_revenue[i].month, mkey) == 0) {
-                        monthly_revenue[i].appt_count++;
-                        monthly_revenue[i].onsite_count += (int)pr->data.total_price;
+                        monthly_revenue[i].appt_count++;                       /* 处方计数 */
+                        monthly_revenue[i].onsite_count += (int)pr->data.total_price; /* 收入累加 */
                         found = true;
                         break;
                     }
@@ -767,13 +822,14 @@ static void analysis_financial_stats(const char *month_filter) {
         pr = pr->next;
     }
 
+    /* 费用汇总输出 / Revenue summary output */
     printf("\n  " C_BOLD "费用汇总" C_RESET "\n");
     printf("  %-16s %d\n", "处方总数:", total_pres);
     printf("  %-16s %.2f\n", "总金额:", total_amount);
     printf("  %-16s %.2f\n", "报销金额:", total_reimb);
     printf("  %-16s %.2f\n", "实际收入:", total_amount - total_reimb);
 
-    // --- 科室收入排名 ---
+    /* 科室收入排名 (按金额降序) / Department revenue ranking */
     qsort(dept_items, dept_count, sizeof(AccItem), compare_amount_desc);
 
     printf("\n  " C_BOLD "科室收入排名" C_RESET "\n");
@@ -787,7 +843,7 @@ static void analysis_financial_stats(const char *month_filter) {
         printf("%8.2f\n", dept_items[i].amount - dept_items[i].reimbursement);
     }
 
-    // --- 月度收入汇总 (无筛选时) ---
+    /* 月度收入汇总 (仅在无筛选时显示) / Monthly revenue summary (only when no filter) */
     if (mlen == 0 && month_rev_count > 0) {
         qsort(monthly_revenue, month_rev_count, sizeof(MonthAcc), compare_month);
         printf("\n  " C_BOLD "月度收入汇总" C_RESET "\n");
@@ -805,12 +861,18 @@ static void analysis_financial_stats(const char *month_filter) {
     free_prescription_list(pres_head);
 }
 
-// =======================  CSV 导出 =======================
+/* ==================  6. CSV 导出 / CSV Export ================== */
 
+/* 将所有数据实体导出为 CSV 文件到 data/export/ 目录
+   支持按月份筛选 (预约/处方/日志)
+   导出: patients.csv, doctors.csv, appointments.csv, prescriptions.csv,
+         drugs.csv, logs.csv
+   Export all data entities as CSV files to data/export/.
+   Supports month filtering for appointments, prescriptions, and logs. */
 static void analysis_export_csv(const char *month_filter) {
     ui_sub_header("导出报表为 CSV");
 
-    // Create export directory
+    /* 创建导出目录 / Create export directory */
 #ifdef _WIN32
     _mkdir(DATA_DIR "/export");
 #else
@@ -818,9 +880,9 @@ static void analysis_export_csv(const char *month_filter) {
 #endif
 
     char path[256];
-    int count = 0;
+    int count = 0;   /* 成功导出的文件计数 */
 
-    // Export patients
+    /* 导出患者 / Export patients */
     {
         PatientNode *ph = load_patients_list();
         snprintf(path, sizeof(path), DATA_DIR "/export/patients.csv");
@@ -842,7 +904,7 @@ static void analysis_export_csv(const char *month_filter) {
         if (ph) free_patient_list(ph);
     }
 
-    // Export doctors
+    /* 导出医生 / Export doctors */
     {
         DoctorNode *dh = load_doctors_list();
         snprintf(path, sizeof(path), DATA_DIR "/export/doctors.csv");
@@ -862,7 +924,7 @@ static void analysis_export_csv(const char *month_filter) {
         if (dh) free_doctor_list(dh);
     }
 
-    // Export appointments (filtered by month if applicable)
+    /* 导出预约 / Export appointments (支持月份筛选) */
     {
         AppointmentNode *ah = load_appointments_list();
         snprintf(path, sizeof(path), DATA_DIR "/export/appointments.csv");
@@ -886,7 +948,7 @@ static void analysis_export_csv(const char *month_filter) {
         if (ah) free_appointment_list(ah);
     }
 
-    // Export prescriptions (filtered by month if applicable)
+    /* 导出处方 / Export prescriptions (支持月份筛选) */
     {
         PrescriptionNode *ph = load_prescriptions_list();
         snprintf(path, sizeof(path), DATA_DIR "/export/prescriptions.csv");
@@ -910,7 +972,7 @@ static void analysis_export_csv(const char *month_filter) {
         if (ph) free_prescription_list(ph);
     }
 
-    // Export drugs
+    /* 导出药品 / Export drugs */
     {
         DrugNode *dh = load_drugs_list();
         snprintf(path, sizeof(path), DATA_DIR "/export/drugs.csv");
@@ -941,7 +1003,7 @@ static void analysis_export_csv(const char *month_filter) {
         ui_err("导出失败!");
     }
 
-    // Also export filtered logs
+    /* 导出日志 (额外，不计入 count) / Export logs (extra, not counted) */
     {
         LogEntryNode *lh = load_logs_list();
         if (lh) {
@@ -967,8 +1029,10 @@ static void analysis_export_csv(const char *month_filter) {
     }
 }
 
-// =======================  入口菜单 =======================
+/* ==================  分析菜单入口 / Analysis Menu Entry ================== */
 
+/* 管理员分析菜单: 5 种分析视图 + 月份筛选 + CSV 导出
+   Admin analysis menu: 5 views + month filter + CSV export */
 int admin_analysis_menu(const User *current_user) {
     (void)current_user;
     char month_filter[8] = "";
@@ -980,13 +1044,13 @@ int admin_analysis_menu(const User *current_user) {
         printf("\n");
         ui_box_top("分析报表");
         ui_divider();
-        ui_menu_item(1, "经营概览");
-        ui_menu_item(2, "趋势分析");
-        ui_menu_item(3, "医生负载");
-        ui_menu_item(4, "患者画像");
-        ui_menu_item(5, "财务统计");
-        ui_menu_item(6, "切换月份筛选");
-        ui_menu_item(7, "导出 CSV");
+        ui_menu_item(1, "经营概览");           /* 今日门诊/收入/床位/TOP10 */
+        ui_menu_item(2, "趋势分析");           /* 月度就诊/周度/药物趋势 */
+        ui_menu_item(3, "医生负载");           /* 每位医生的接诊负荷 */
+        ui_menu_item(4, "患者画像");           /* 活跃患者统计与分布 */
+        ui_menu_item(5, "财务统计");           /* 收入/报销/科室排名 */
+        ui_menu_item(6, "切换月份筛选");       /* 切换 YYYY-MM 筛选 */
+        ui_menu_item(7, "导出 CSV");           /* 导出全部数据为 CSV */
         if (month_filter[0]) {
             printf(C_DIM "  当前筛选: %s\n" C_RESET, month_filter);
         }
@@ -997,21 +1061,11 @@ int admin_analysis_menu(const User *current_user) {
         if (choice == 0) break;
 
         switch (choice) {
-            case 1:
-                analysis_operations_overview(month_filter);
-                break;
-            case 2:
-                analysis_trend_trends(month_filter);
-                break;
-            case 3:
-                analysis_doctor_load(month_filter);
-                break;
-            case 4:
-                analysis_patient_profile(month_filter);
-                break;
-            case 5:
-                analysis_financial_stats(month_filter);
-                break;
+            case 1: analysis_operations_overview(month_filter); break;
+            case 2: analysis_trend_trends(month_filter);       break;
+            case 3: analysis_doctor_load(month_filter);        break;
+            case 4: analysis_patient_profile(month_filter);    break;
+            case 5: analysis_financial_stats(month_filter);    break;
             case 6: {
                 char new_filter[8] = "";
                 analysis_get_month_filter(new_filter, sizeof(new_filter));
@@ -1019,9 +1073,7 @@ int admin_analysis_menu(const User *current_user) {
                 month_filter[sizeof(month_filter) - 1] = '\0';
                 continue;
             }
-            case 7:
-                analysis_export_csv(month_filter);
-                break;
+            case 7: analysis_export_csv(month_filter); break;
         }
         pause_screen();
     }
