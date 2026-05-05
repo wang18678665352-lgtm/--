@@ -26,6 +26,11 @@
 #include "../login.h"
 #include "../public.h"
 #include "../sha256.h"
+#include <sys/stat.h>   /* stat() — 文件修改时间轮询 / file mtime polling */
+
+/* 轮询刷新常量 / Polling refresh constants */
+#define REFRESH_TIMER_ID    10
+#define REFRESH_INTERVAL_MS 3000   /* 3 秒轮询 / 3-second poll */
 
 /* ==================  全局变量 / Global Variables ================== */
 
@@ -37,6 +42,12 @@ static HWND g_hContentView = NULL;     /* 右侧内容区 / right content area *
 static HWND g_hStatusBar = NULL;       /* 底部状态栏 / bottom status bar */
 static HWND g_hLogoutBtn = NULL;       /* 注销按钮 / logout button */
 static int g_currentView = 0;          /* 当前视图 ID / current view ID */
+
+/* 文件修改时间缓存 — 跨实例变更检测 / Cached mtimes for cross-instance detection */
+static time_t g_lastApptMtime   = 0;   /* appointments.txt */
+static time_t g_lastRecordMtime = 0;   /* medical_records.txt */
+static time_t g_lastRxMtime     = 0;   /* prescriptions.txt */
+static time_t g_lastWardMtime   = 0;   /* wards.txt */
 
 /* 前向声明 / Forward declarations */
 static BOOL InitMainWindow(HINSTANCE hInst, int nCmdShow);
@@ -479,6 +490,8 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         );
 
         SetStatusText(hWnd, "  就绪");
+        /* 启动文件轮询定时器 — 检测其他实例的数据变更 */
+        SetTimer(hWnd, REFRESH_TIMER_ID, REFRESH_INTERVAL_MS, NULL);
         return 0;
 
     case WM_SIZE:
@@ -542,7 +555,52 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         DestroyWindow(hWnd);
         return 0;
 
+    case WM_TIMER: {
+        /* 文件轮询: 检测其他实例是否修改了数据文件
+           File polling: detect if other instances modified data files */
+        if (wParam == REFRESH_TIMER_ID && g_currentView > 0) {
+            int dirty = 0;
+            struct stat st;
+
+            if (!dirty && stat(APPOINTMENTS_FILE, &st) == 0) {
+                if (st.st_mtime != g_lastApptMtime) {
+                    g_lastApptMtime = st.st_mtime;
+                    if (g_currentView == NAV_PATIENT_APPOINTMENT ||
+                        g_currentView == NAV_DOCTOR_REMINDER ||
+                        g_currentView == NAV_DOCTOR_CONSULTATION)
+                        dirty = 1;
+                }
+            }
+            if (!dirty && stat(MEDICAL_RECORDS_FILE, &st) == 0) {
+                if (st.st_mtime != g_lastRecordMtime) {
+                    g_lastRecordMtime = st.st_mtime;
+                    if (g_currentView == NAV_PATIENT_DIAGNOSIS)
+                        dirty = 1;
+                }
+            }
+            if (!dirty && stat(PRESCRIPTIONS_FILE, &st) == 0) {
+                if (st.st_mtime != g_lastRxMtime) {
+                    g_lastRxMtime = st.st_mtime;
+                    if (g_currentView == NAV_PATIENT_PRESCRIPTION)
+                        dirty = 1;
+                }
+            }
+            if (!dirty && stat(WARDS_FILE, &st) == 0) {
+                if (st.st_mtime != g_lastWardMtime) {
+                    g_lastWardMtime = st.st_mtime;
+                    if (g_currentView == NAV_PATIENT_WARD)
+                        dirty = 1;
+                }
+            }
+
+            if (dirty)
+                SwitchView(hWnd, g_currentView);
+        }
+        return 0;
+    }
+
     case WM_DESTROY:
+        KillTimer(hWnd, REFRESH_TIMER_ID);
         PostQuitMessage(0);
         return 0;
 

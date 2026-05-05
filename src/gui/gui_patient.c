@@ -277,9 +277,9 @@ static int count_patient_no_shows(const char *patient_id) {
     return count;
 }
 
-/* 检查同一患者是否已在同时段有预约 / Check duplicate appointment */
+/* 检查同一患者是否已在同科室同时段有预约 / Check duplicate by patient+dept+date+timeslot */
 static int has_duplicate_appointment(const char *patient_id,
-                                     const char *doctor_id,
+                                     const char *department_id,
                                      const char *date,
                                      const char *timeSlot) {
     AppointmentNode *apps = load_appointments_list();
@@ -287,7 +287,7 @@ static int has_duplicate_appointment(const char *patient_id,
     int found = 0;
     for (AppointmentNode *cur = apps; cur; cur = cur->next) {
         if (strcmp(cur->data.patient_id, patient_id) == 0 &&
-            strcmp(cur->data.doctor_id, doctor_id) == 0 &&
+            strcmp(cur->data.department_id, department_id) == 0 &&
             strcmp(cur->data.appointment_date, date) == 0 &&
             strcmp(cur->data.appointment_time, timeSlot) == 0 &&
             strcmp(cur->data.status, "待就诊") == 0) {
@@ -297,6 +297,21 @@ static int has_duplicate_appointment(const char *patient_id,
     }
     free_appointment_list(apps);
     return found;
+}
+
+/* 统计患者待就诊预约总数 / Count active pending appointments for patient */
+static int count_patient_active_appointments(const char *patient_id) {
+    int count = 0;
+    AppointmentNode *apps = load_appointments_list();
+    if (!apps) return 0;
+    for (AppointmentNode *cur = apps; cur; cur = cur->next) {
+        if (strcmp(cur->data.patient_id, patient_id) == 0 &&
+            strcmp(cur->data.status, "待就诊") == 0) {
+            count++;
+        }
+    }
+    free_appointment_list(apps);
+    return count;
 }
 
 /* ─── 挂号对话框 / Registration Dialog ──────────────────────────────── */
@@ -604,10 +619,23 @@ static LRESULT CALLBACK RegDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* 重复挂号检查 / Duplicate check */
-            if (has_duplicate_appointment(pid, docId, dateStr, timeSlot)) {
+            /* 活跃预约数检查: 最多 3 条待就诊 / Max 3 active appointments */
+            {
+                int activeCount = count_patient_active_appointments(pid);
+                if (activeCount >= 3) {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg),
+                        "您已有 %d 条待就诊预约 (最多 3 条), 请先取消部分预约后再挂号",
+                        activeCount);
+                    SetDlgItemTextA(hDlg, IDC_REG_STATUS, msg);
+                    return 0;
+                }
+            }
+
+            /* 同科室同时段重复检查 / Same-dept same-slot duplicate check */
+            if (has_duplicate_appointment(pid, deptId, dateStr, timeSlot)) {
                 SetDlgItemTextA(hDlg, IDC_REG_STATUS,
-                    "您在该时段已有预约, 请勿重复挂号");
+                    "您已在该科室此时段有预约 (含其他医生), 请勿重复挂号");
                 return 0;
             }
 
